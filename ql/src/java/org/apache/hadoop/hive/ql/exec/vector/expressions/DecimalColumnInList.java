@@ -25,6 +25,7 @@ import org.apache.hadoop.hive.ql.exec.vector.LongColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
 import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
 
+import java.util.Arrays;
 import java.util.HashSet;
 
 /**
@@ -37,7 +38,10 @@ public class DecimalColumnInList extends VectorExpression implements IDecimalInE
   private int outputColumn;
 
   // The set object containing the IN list.
-  private transient HashSet<HiveDecimal> inSet;
+  // We use a HashSet of HiveDecimalWritable objects instead of HiveDecimal objects so
+  // we can lookup DecimalColumnVector HiveDecimalWritable quickly without creating
+  // a HiveDecimal lookup object.
+  private transient HashSet<HiveDecimalWritable> inSet;
 
   public DecimalColumnInList() {
     super();
@@ -61,9 +65,9 @@ public class DecimalColumnInList extends VectorExpression implements IDecimalInE
     }
 
     if (inSet == null) {
-      inSet = new HashSet<HiveDecimal>(inListValues.length);
+      inSet = new HashSet<HiveDecimalWritable>(inListValues.length);
       for (HiveDecimal val : inListValues) {
-        inSet.add(val);
+        inSet.add(new HiveDecimalWritable(val));
       }
     }
 
@@ -88,16 +92,16 @@ public class DecimalColumnInList extends VectorExpression implements IDecimalInE
 
         // All must be selected otherwise size would be zero
         // Repeating property will not change.
-        outputVector[0] = inSet.contains(vector[0].getHiveDecimal()) ? 1 : 0;
+        outputVector[0] = inSet.contains(vector[0]) ? 1 : 0;
         outputColVector.isRepeating = true;
       } else if (batch.selectedInUse) {
         for(int j = 0; j != n; j++) {
           int i = sel[j];
-          outputVector[i] = inSet.contains(vector[i].getHiveDecimal()) ? 1 : 0;
+          outputVector[i] = inSet.contains(vector[i]) ? 1 : 0;
         }
       } else {
         for(int i = 0; i != n; i++) {
-          outputVector[i] = inSet.contains(vector[i].getHiveDecimal()) ? 1 : 0;
+          outputVector[i] = inSet.contains(vector[i]) ? 1 : 0;
         }
       }
     } else {
@@ -106,7 +110,7 @@ public class DecimalColumnInList extends VectorExpression implements IDecimalInE
         //All must be selected otherwise size would be zero
         //Repeating property will not change.
         if (!nullPos[0]) {
-          outputVector[0] = inSet.contains(vector[0].getHiveDecimal()) ? 1 : 0;
+          outputVector[0] = inSet.contains(vector[0]) ? 1 : 0;
           outNulls[0] = false;
         } else {
           outNulls[0] = true;
@@ -117,14 +121,14 @@ public class DecimalColumnInList extends VectorExpression implements IDecimalInE
           int i = sel[j];
           outNulls[i] = nullPos[i];
           if (!nullPos[i]) {
-            outputVector[i] = inSet.contains(vector[i].getHiveDecimal()) ? 1 : 0;
+            outputVector[i] = inSet.contains(vector[i]) ? 1 : 0;
           }
         }
       } else {
         System.arraycopy(nullPos, 0, outNulls, 0, n);
         for(int i = 0; i != n; i++) {
           if (!nullPos[i]) {
-            outputVector[i] = inSet.contains(vector[i].getHiveDecimal()) ? 1 : 0;
+            outputVector[i] = inSet.contains(vector[i]) ? 1 : 0;
           }
         }
       }
@@ -152,4 +156,10 @@ public class DecimalColumnInList extends VectorExpression implements IDecimalInE
   public void setInListValues(HiveDecimal[] a) {
     this.inListValues = a;
   }
+
+  @Override
+  public String vectorExpressionParameters() {
+    return "col " + inputCol + ", values " + Arrays.toString(inListValues);
+  }
+
 }

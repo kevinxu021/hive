@@ -181,9 +181,18 @@ public abstract class TaskCompiler {
       }
 
       FetchWork fetch = new FetchWork(loadFileDesc.getSourcePath(), resultTab, outerQueryLimit);
-      fetch.setHiveServerQuery(SessionState.get().isHiveServerQuery());
+      boolean isHiveServerQuery = SessionState.get().isHiveServerQuery();
+      fetch.setHiveServerQuery(isHiveServerQuery);
       fetch.setSource(pCtx.getFetchSource());
       fetch.setSink(pCtx.getFetchSink());
+      if (isHiveServerQuery &&
+        null != resultTab &&
+        resultTab.getSerdeClassName().equalsIgnoreCase(ThriftJDBCBinarySerDe.class.getName()) &&
+        HiveConf.getBoolVar(conf, HiveConf.ConfVars.HIVE_SERVER2_THRIFT_RESULTSET_SERIALIZE_IN_TASKS)) {
+          fetch.setIsUsingThriftJDBCBinarySerDe(true);
+      } else {
+          fetch.setIsUsingThriftJDBCBinarySerDe(false);
+      }
 
       pCtx.setFetchTask((FetchTask) TaskFactory.get(fetch, conf));
 
@@ -193,7 +202,7 @@ public abstract class TaskCompiler {
       int fetchLimit = HiveConf.getIntVar(conf, HiveConf.ConfVars.HIVELIMITOPTMAXFETCH);
       if (globalLimitCtx.isEnable() && globalLimitCtx.getGlobalLimit() > fetchLimit) {
         LOG.info("For FetchTask, LIMIT " + globalLimitCtx.getGlobalLimit() + " > " + fetchLimit
-            + ". Doesn't qualify limit optimiztion.");
+            + ". Doesn't qualify limit optimization.");
         globalLimitCtx.disableOpt();
 
       }
@@ -248,7 +257,7 @@ public abstract class TaskCompiler {
                     + " does not exist.");
               }
               Warehouse wh = new Warehouse(conf);
-              targetPath = wh.getTablePath(db.getDatabase(names[0]), names[1]);
+              targetPath = wh.getDefaultTablePath(db.getDatabase(names[0]), names[1]);
             } catch (HiveException e) {
               throw new SemanticException(e);
             } catch (MetaException e) {
@@ -521,6 +530,11 @@ public abstract class TaskCompiler {
     clone.setFetchTask(pCtx.getFetchTask());
     clone.setLineageInfo(pCtx.getLineageInfo());
     clone.setMapJoinOps(pCtx.getMapJoinOps());
+    clone.setRsToRuntimeValuesInfoMap(pCtx.getRsToRuntimeValuesInfoMap());
+    clone.setRsToSemiJoinBranchInfo(pCtx.getRsToSemiJoinBranchInfo());
+    clone.setColExprToGBMap(pCtx.getColExprToGBMap());
+    clone.setSemiJoinHints(pCtx.getSemiJoinHints());
+
     return clone;
   }
 

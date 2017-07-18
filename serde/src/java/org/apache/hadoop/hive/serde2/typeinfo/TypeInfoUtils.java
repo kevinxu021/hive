@@ -158,7 +158,7 @@ public final class TypeInfoUtils {
 
   /**
    * Returns the array element type, if the Type is an array (Object[]), or
-   * GenericArrayType (Map<String,String>[]). Otherwise return null.
+   * GenericArrayType (Map&lt;String,String&gt;[]). Otherwise return null.
    */
   public static Type getArrayElementType(Type t) {
     if (t instanceof Class && ((Class<?>) t).isArray()) {
@@ -176,7 +176,7 @@ public final class TypeInfoUtils {
    *
    * @param size
    *          In case the last parameter of Method is an array, we will try to
-   *          return a List<TypeInfo> with the specified size by repeating the
+   *          return a List&lt;TypeInfo&gt; with the specified size by repeating the
    *          element of the array at the end. In case the size is smaller than
    *          the minimum possible number of arguments for the method, null will
    *          be returned.
@@ -449,6 +449,10 @@ public final class TypeInfoUtils {
           if (params == null || params.length == 0) {
             // It's possible that old metadata still refers to "decimal" as a column type w/o
             // precision/scale. In this case, the default (10,0) is assumed. Thus, do nothing here.
+          } else if (params.length == 1) {
+            // only precision is specified
+            precision = Integer.valueOf(params[0]);
+            HiveDecimalUtils.validateParameter(precision, scale);
           } else if (params.length == 2) {
             // New metadata always have two parameters.
             precision = Integer.parseInt(params[0]);
@@ -869,7 +873,7 @@ public final class TypeInfoUtils {
     }
   }
 
-  public static void registerNumericType(PrimitiveCategory primitiveCategory, int level) {
+  public static synchronized void registerNumericType(PrimitiveCategory primitiveCategory, int level) {
     numericTypeList.add(primitiveCategory);
     numericTypes.put(primitiveCategory, level);
   }

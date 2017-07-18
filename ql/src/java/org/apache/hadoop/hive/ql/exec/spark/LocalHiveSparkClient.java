@@ -27,6 +27,7 @@ import org.slf4j.LoggerFactory;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.conf.HiveConfUtil;
 import org.apache.hadoop.hive.ql.Context;
 import org.apache.hadoop.hive.ql.DriverContext;
 import org.apache.hadoop.hive.ql.exec.Utilities;
@@ -35,6 +36,7 @@ import org.apache.hadoop.hive.ql.exec.spark.status.impl.JobMetricsListener;
 import org.apache.hadoop.hive.ql.exec.spark.status.impl.LocalSparkJobRef;
 import org.apache.hadoop.hive.ql.exec.spark.status.impl.LocalSparkJobStatus;
 import org.apache.hadoop.hive.ql.io.HiveKey;
+import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.BaseWork;
 import org.apache.hadoop.hive.ql.plan.SparkWork;
 import org.apache.hadoop.hive.ql.session.SessionState;
@@ -113,6 +115,11 @@ public class LocalHiveSparkClient implements HiveSparkClient {
     FileSystem fs = emptyScratchDir.getFileSystem(jobConf);
     fs.mkdirs(emptyScratchDir);
 
+    // Update credential provider location
+    // the password to the credential provider in already set in the sparkConf
+    // in HiveSparkClientFactory
+    HiveConfUtil.updateJobCredentialProviders(jobConf);
+
     SparkCounters sparkCounters = new SparkCounters(sc);
     Map<String, List<String>> prefixes = sparkWork.getRequiredCounterPrefix();
     if (prefixes != null) {
@@ -128,6 +135,10 @@ public class LocalHiveSparkClient implements HiveSparkClient {
     SparkPlanGenerator gen =
       new SparkPlanGenerator(sc, ctx, jobConf, emptyScratchDir, sparkReporter);
     SparkPlan plan = gen.generate(sparkWork);
+
+    if (driverContext.isShutdown()) {
+      throw new HiveException("Operation is cancelled.");
+    }
 
     // Execute generated plan.
     JavaPairRDD<HiveKey, BytesWritable> finalRDD = plan.generateGraph();

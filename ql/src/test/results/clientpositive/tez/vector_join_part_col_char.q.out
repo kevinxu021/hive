@@ -16,11 +16,9 @@ POSTHOOK: Output: database:default
 POSTHOOK: Output: default@studenttab
 PREHOOK: query: insert into table studenttab values ('calvin garcia',56,2.50), ('oscar miller',66,3.00), ('(yuri xylophone',30,2.74),('alice underhill',46,3.50)
 PREHOOK: type: QUERY
-PREHOOK: Input: default@values__tmp__table__1
 PREHOOK: Output: default@studenttab
 POSTHOOK: query: insert into table studenttab values ('calvin garcia',56,2.50), ('oscar miller',66,3.00), ('(yuri xylophone',30,2.74),('alice underhill',46,3.50)
 POSTHOOK: type: QUERY
-POSTHOOK: Input: default@values__tmp__table__1
 POSTHOOK: Output: default@studenttab
 POSTHOOK: Lineage: studenttab.age EXPRESSION [(values__tmp__table__1)values__tmp__table__1.FieldSchema(name:tmp_values_col2, type:string, comment:), ]
 POSTHOOK: Lineage: studenttab.gpa EXPRESSION [(values__tmp__table__1)values__tmp__table__1.FieldSchema(name:tmp_values_col3, type:string, comment:), ]
@@ -87,19 +85,19 @@ PREHOOK: Input: default@char_tbl1
 POSTHOOK: query: show partitions char_tbl1
 POSTHOOK: type: SHOWPARTITIONS
 POSTHOOK: Input: default@char_tbl1
-gpa=2.5
-gpa=3.5
+gpa=2.5                                               
+gpa=3.5                                               
 PREHOOK: query: show partitions char_tbl2
 PREHOOK: type: SHOWPARTITIONS
 PREHOOK: Input: default@char_tbl2
 POSTHOOK: query: show partitions char_tbl2
 POSTHOOK: type: SHOWPARTITIONS
 POSTHOOK: Input: default@char_tbl2
-gpa=3
-gpa=3.5
-PREHOOK: query: explain select c1.name, c1.age, c1.gpa, c2.name, c2.age, c2.gpa from char_tbl1 c1 join char_tbl2 c2 on (c1.gpa = c2.gpa)
+gpa=3    
+gpa=3.5  
+PREHOOK: query: explain vectorization select c1.name, c1.age, c1.gpa, c2.name, c2.age, c2.gpa from char_tbl1 c1 join char_tbl2 c2 on (c1.gpa = c2.gpa)
 PREHOOK: type: QUERY
-POSTHOOK: query: explain select c1.name, c1.age, c1.gpa, c2.name, c2.age, c2.gpa from char_tbl1 c1 join char_tbl2 c2 on (c1.gpa = c2.gpa)
+POSTHOOK: query: explain vectorization select c1.name, c1.age, c1.gpa, c2.name, c2.age, c2.gpa from char_tbl1 c1 join char_tbl2 c2 on (c1.gpa = c2.gpa)
 POSTHOOK: type: QUERY
 Plan optimized by CBO.
 
@@ -138,38 +136,38 @@ Stage-0
 PREHOOK: query: select c1.name, c1.age, c1.gpa, c2.name, c2.age, c2.gpa from char_tbl1 c1 join char_tbl2 c2 on (c1.gpa = c2.gpa)
 PREHOOK: type: QUERY
 PREHOOK: Input: default@char_tbl1
-PREHOOK: Input: default@char_tbl1@gpa=2.5
-PREHOOK: Input: default@char_tbl1@gpa=3.5
+PREHOOK: Input: default@char_tbl1@gpa=2.5                                               
+PREHOOK: Input: default@char_tbl1@gpa=3.5                                               
 PREHOOK: Input: default@char_tbl2
-PREHOOK: Input: default@char_tbl2@gpa=3
-PREHOOK: Input: default@char_tbl2@gpa=3.5
+PREHOOK: Input: default@char_tbl2@gpa=3    
+PREHOOK: Input: default@char_tbl2@gpa=3.5  
 #### A masked pattern was here ####
 POSTHOOK: query: select c1.name, c1.age, c1.gpa, c2.name, c2.age, c2.gpa from char_tbl1 c1 join char_tbl2 c2 on (c1.gpa = c2.gpa)
 POSTHOOK: type: QUERY
 POSTHOOK: Input: default@char_tbl1
-POSTHOOK: Input: default@char_tbl1@gpa=2.5
-POSTHOOK: Input: default@char_tbl1@gpa=3.5
+POSTHOOK: Input: default@char_tbl1@gpa=2.5                                               
+POSTHOOK: Input: default@char_tbl1@gpa=3.5                                               
 POSTHOOK: Input: default@char_tbl2
-POSTHOOK: Input: default@char_tbl2@gpa=3
-POSTHOOK: Input: default@char_tbl2@gpa=3.5
+POSTHOOK: Input: default@char_tbl2@gpa=3    
+POSTHOOK: Input: default@char_tbl2@gpa=3.5  
 #### A masked pattern was here ####
 alice underhill	46	3.5                                               	alice underhill	46	3.5  
 PREHOOK: query: select c1.name, c1.age, c1.gpa, c2.name, c2.age, c2.gpa from char_tbl1 c1 join char_tbl2 c2 on (c1.gpa = c2.gpa)
 PREHOOK: type: QUERY
 PREHOOK: Input: default@char_tbl1
-PREHOOK: Input: default@char_tbl1@gpa=2.5
-PREHOOK: Input: default@char_tbl1@gpa=3.5
+PREHOOK: Input: default@char_tbl1@gpa=2.5                                               
+PREHOOK: Input: default@char_tbl1@gpa=3.5                                               
 PREHOOK: Input: default@char_tbl2
-PREHOOK: Input: default@char_tbl2@gpa=3
-PREHOOK: Input: default@char_tbl2@gpa=3.5
+PREHOOK: Input: default@char_tbl2@gpa=3    
+PREHOOK: Input: default@char_tbl2@gpa=3.5  
 #### A masked pattern was here ####
 POSTHOOK: query: select c1.name, c1.age, c1.gpa, c2.name, c2.age, c2.gpa from char_tbl1 c1 join char_tbl2 c2 on (c1.gpa = c2.gpa)
 POSTHOOK: type: QUERY
 POSTHOOK: Input: default@char_tbl1
-POSTHOOK: Input: default@char_tbl1@gpa=2.5
-POSTHOOK: Input: default@char_tbl1@gpa=3.5
+POSTHOOK: Input: default@char_tbl1@gpa=2.5                                               
+POSTHOOK: Input: default@char_tbl1@gpa=3.5                                               
 POSTHOOK: Input: default@char_tbl2
-POSTHOOK: Input: default@char_tbl2@gpa=3
-POSTHOOK: Input: default@char_tbl2@gpa=3.5
+POSTHOOK: Input: default@char_tbl2@gpa=3    
+POSTHOOK: Input: default@char_tbl2@gpa=3.5  
 #### A masked pattern was here ####
 alice underhill	46	3.5                                               	alice underhill	46	3.5  

@@ -31,6 +31,7 @@ import org.apache.hadoop.hive.common.ValidCompactorTxnList;
 import org.apache.hadoop.hive.common.ValidReadTxnList;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.hive_metastoreConstants;
+import org.apache.hadoop.hive.ql.exec.Utilities;
 import org.apache.hadoop.hive.ql.io.AcidUtils.AcidOperationalProperties;
 import org.apache.hadoop.hive.ql.io.orc.TestInputOutputFormat;
 import org.apache.hadoop.hive.ql.io.orc.TestInputOutputFormat.MockFile;
@@ -113,25 +114,25 @@ public class TestAcidUtils {
     assertEquals(true, opts.isWritingBase());
     assertEquals(567, opts.getMaximumTransactionId());
     assertEquals(0, opts.getMinimumTransactionId());
-    assertEquals(123, opts.getBucket());
+    assertEquals(123, opts.getBucketId());
     opts = AcidUtils.parseBaseOrDeltaBucketFilename(new Path(dir, "delta_000005_000006/bucket_00001"),
         conf);
     assertEquals(false, opts.getOldStyle());
     assertEquals(false, opts.isWritingBase());
     assertEquals(6, opts.getMaximumTransactionId());
     assertEquals(5, opts.getMinimumTransactionId());
-    assertEquals(1, opts.getBucket());
+    assertEquals(1, opts.getBucketId());
     opts = AcidUtils.parseBaseOrDeltaBucketFilename(new Path(dir, "delete_delta_000005_000006/bucket_00001"),
         conf);
     assertEquals(false, opts.getOldStyle());
     assertEquals(false, opts.isWritingBase());
     assertEquals(6, opts.getMaximumTransactionId());
     assertEquals(5, opts.getMinimumTransactionId());
-    assertEquals(1, opts.getBucket());
+    assertEquals(1, opts.getBucketId());
     opts = AcidUtils.parseBaseOrDeltaBucketFilename(new Path(dir, "000123_0"), conf);
     assertEquals(true, opts.getOldStyle());
     assertEquals(true, opts.isWritingBase());
-    assertEquals(123, opts.getBucket());
+    assertEquals(123, opts.getBucketId());
     assertEquals(0, opts.getMinimumTransactionId());
     assertEquals(0, opts.getMaximumTransactionId());
 
@@ -142,6 +143,10 @@ public class TestAcidUtils {
     Configuration conf = new Configuration();
     MockFileSystem fs = new MockFileSystem(conf,
         new MockFile("mock:/tbl/part1/000000_0", 500, new byte[0]),
+        new MockFile("mock:/tbl/part1/000000_0" + Utilities.COPY_KEYWORD + "1",
+          500, new byte[0]),
+        new MockFile("mock:/tbl/part1/000000_0" + Utilities.COPY_KEYWORD + "2",
+          500, new byte[0]),
         new MockFile("mock:/tbl/part1/000001_1", 500, new byte[0]),
         new MockFile("mock:/tbl/part1/000002_0", 500, new byte[0]),
         new MockFile("mock:/tbl/part1/random", 500, new byte[0]),
@@ -154,13 +159,17 @@ public class TestAcidUtils {
     assertEquals(0, dir.getCurrentDirectories().size());
     assertEquals(0, dir.getObsolete().size());
     List<HdfsFileStatusWithId> result = dir.getOriginalFiles();
-    assertEquals(5, result.size());
+    assertEquals(7, result.size());
     assertEquals("mock:/tbl/part1/000000_0", result.get(0).getFileStatus().getPath().toString());
-    assertEquals("mock:/tbl/part1/000001_1", result.get(1).getFileStatus().getPath().toString());
-    assertEquals("mock:/tbl/part1/000002_0", result.get(2).getFileStatus().getPath().toString());
-    assertEquals("mock:/tbl/part1/random", result.get(3).getFileStatus().getPath().toString());
+    assertEquals("mock:/tbl/part1/000000_0" + Utilities.COPY_KEYWORD + "1",
+      result.get(1).getFileStatus().getPath().toString());
+    assertEquals("mock:/tbl/part1/000000_0" + Utilities.COPY_KEYWORD + "2",
+      result.get(2).getFileStatus().getPath().toString());
+    assertEquals("mock:/tbl/part1/000001_1", result.get(3).getFileStatus().getPath().toString());
+    assertEquals("mock:/tbl/part1/000002_0", result.get(4).getFileStatus().getPath().toString());
+    assertEquals("mock:/tbl/part1/random", result.get(5).getFileStatus().getPath().toString());
     assertEquals("mock:/tbl/part1/subdir/000000_0",
-        result.get(4).getFileStatus().getPath().toString());
+        result.get(6).getFileStatus().getPath().toString());
   }
 
   @Test

@@ -32,6 +32,7 @@ import java.util.Properties;
 
 import org.apache.commons.lang.StringUtils;
 import org.apache.hadoop.hive.ql.exec.SerializationUtilities;
+import org.apache.hadoop.hive.ql.log.LogDivertAppenderForTest;
 import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,6 +47,7 @@ import org.apache.hadoop.hive.common.LogUtils;
 import org.apache.hadoop.hive.common.LogUtils.LogInitializationException;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
+import org.apache.hadoop.hive.conf.HiveConfUtil;
 import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.Context;
 import org.apache.hadoop.hive.ql.DriverContext;
@@ -67,6 +69,7 @@ import org.apache.hadoop.hive.ql.io.HiveFileFormatUtils;
 import org.apache.hadoop.hive.ql.io.HiveKey;
 import org.apache.hadoop.hive.ql.io.HiveOutputFormatImpl;
 import org.apache.hadoop.hive.ql.io.IOPrepareCache;
+import org.apache.hadoop.hive.ql.log.LogDivertAppender;
 import org.apache.hadoop.hive.ql.log.NullAppender;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.FetchWork;
@@ -115,6 +118,8 @@ public class ExecDriver extends Task<MapredWork> implements Serializable, Hadoop
   protected transient JobConf job;
   public static MemoryMXBean memoryMXBean;
   protected HadoopJobExecHelper jobExecHelper;
+  private transient boolean isShutdown = false;
+  private transient boolean jobKilled = false;
 
   protected static transient final Logger LOG = LoggerFactory.getLogger(ExecDriver.class);
 
@@ -224,6 +229,11 @@ public class ExecDriver extends Task<MapredWork> implements Serializable, Hadoop
     Path emptyScratchDir;
     JobClient jc = null;
 
+    if (driverContext.isShutdown()) {
+      LOG.warn("Task was cancelled");
+      return 5;
+    }
+
     MapWork mWork = work.getMapWork();
     ReduceWork rWork = work.getReduceWork();
 
@@ -259,25 +269,7 @@ public class ExecDriver extends Task<MapredWork> implements Serializable, Hadoop
       throw new RuntimeException(e.getMessage(), e);
     }
 
-    if (mWork.getNumMapTasks() != null) {
-      job.setNumMapTasks(mWork.getNumMapTasks().intValue());
-    }
-
-    if (mWork.getMaxSplitSize() != null) {
-      HiveConf.setLongVar(job, HiveConf.ConfVars.MAPREDMAXSPLITSIZE, mWork.getMaxSplitSize().longValue());
-    }
-
-    if (mWork.getMinSplitSize() != null) {
-      HiveConf.setLongVar(job, HiveConf.ConfVars.MAPREDMINSPLITSIZE, mWork.getMinSplitSize().longValue());
-    }
-
-    if (mWork.getMinSplitSizePerNode() != null) {
-      HiveConf.setLongVar(job, HiveConf.ConfVars.MAPREDMINSPLITSIZEPERNODE, mWork.getMinSplitSizePerNode().longValue());
-    }
-
-    if (mWork.getMinSplitSizePerRack() != null) {
-      HiveConf.setLongVar(job, HiveConf.ConfVars.MAPREDMINSPLITSIZEPERRACK, mWork.getMinSplitSizePerRack().longValue());
-    }
+    propagateSplitSettings(job, mWork);
 
     job.setNumReduceTasks(rWork != null ? rWork.getNumReduceTasks().intValue() : 0);
     job.setReducerClass(ExecReducer.class);
@@ -413,8 +405,21 @@ public class ExecDriver extends Task<MapredWork> implements Serializable, Hadoop
         TezSessionPoolManager.getInstance().closeIfNotDefault(session, true);
       }
 
+      HiveConfUtil.updateJobCredentialProviders(job);
       // Finally SUBMIT the JOB!
+      if (driverContext.isShutdown()) {
+        LOG.warn("Task was cancelled");
+        return 5;
+      }
+
       rj = jc.submitJob(job);
+
+      if (driverContext.isShutdown()) {
+        LOG.warn("Task was cancelled");
+        killJob();
+        return 5;
+      }
+
       this.jobID = rj.getJobID();
       updateStatusInQueryDisplay();
       returnVal = jobExecHelper.progress(rj, jc, ctx);
@@ -444,7 +449,7 @@ public class ExecDriver extends Task<MapredWork> implements Serializable, Hadoop
 
         if (rj != null) {
           if (returnVal != 0) {
-            rj.killJob();
+            killJob();
           }
           jobID = rj.getID().toString();
         }
@@ -482,6 +487,28 @@ public class ExecDriver extends Task<MapredWork> implements Serializable, Hadoop
     }
 
     return (returnVal);
+  }
+
+  public static void propagateSplitSettings(JobConf job, MapWork work) {
+    if (work.getNumMapTasks() != null) {
+      job.setNumMapTasks(work.getNumMapTasks().intValue());
+    }
+
+    if (work.getMaxSplitSize() != null) {
+      HiveConf.setLongVar(job, HiveConf.ConfVars.MAPREDMAXSPLITSIZE, work.getMaxSplitSize().longValue());
+    }
+
+    if (work.getMinSplitSize() != null) {
+      HiveConf.setLongVar(job, HiveConf.ConfVars.MAPREDMINSPLITSIZE, work.getMinSplitSize().longValue());
+    }
+
+    if (work.getMinSplitSizePerNode() != null) {
+      HiveConf.setLongVar(job, HiveConf.ConfVars.MAPREDMINSPLITSIZEPERNODE, work.getMinSplitSizePerNode().longValue());
+    }
+
+    if (work.getMinSplitSizePerRack() != null) {
+      HiveConf.setLongVar(job, HiveConf.ConfVars.MAPREDMINSPLITSIZEPERRACK, work.getMinSplitSizePerRack().longValue());
+    }
   }
 
   private void handleSampling(Context context, MapWork mWork, JobConf job)
@@ -606,6 +633,8 @@ public class ExecDriver extends Task<MapredWork> implements Serializable, Hadoop
   private static void setupChildLog4j(Configuration conf) {
     try {
       LogUtils.initHiveExecLog4j();
+      LogDivertAppender.registerRoutingAppender(conf);
+      LogDivertAppenderForTest.registerRoutingAppenderIfInTest(conf);
     } catch (LogInitializationException e) {
       System.err.println(e.getMessage());
     }
@@ -676,6 +705,8 @@ public class ExecDriver extends Task<MapredWork> implements Serializable, Hadoop
       HiveConf.setVar(conf, HiveConf.ConfVars.HIVEQUERYID, queryId);
     }
     System.setProperty(HiveConf.ConfVars.HIVEQUERYID.toString(), queryId);
+
+    LogUtils.registerLoggingContext(conf);
 
     if (noLog) {
       // If started from main(), and noLog is on, we should not output
@@ -827,22 +858,37 @@ public class ExecDriver extends Task<MapredWork> implements Serializable, Hadoop
     ss.getHiveHistory().logPlanProgress(queryPlan);
   }
 
+  public boolean isTaskShutdown() {
+    return isShutdown;
+  }
+
   @Override
   public void shutdown() {
     super.shutdown();
-    if (rj != null) {
-      try {
-        rj.killJob();
-      } catch (Exception e) {
-        LOG.warn("failed to kill job " + rj.getID(), e);
-      }
-      rj = null;
-    }
+    killJob();
+    isShutdown = true;
   }
 
   @Override
   public String getExternalHandle() {
     return this.jobID;
+  }
+
+  private void killJob() {
+    boolean needToKillJob = false;
+    synchronized(this) {
+      if (rj != null && !jobKilled) {
+        jobKilled = true;
+        needToKillJob = true;
+      }
+    }
+    if (needToKillJob) {
+      try {
+        rj.killJob();
+      } catch (Exception e) {
+        LOG.warn("failed to kill job " + rj.getID(), e);
+      }
+    }
   }
 }
 

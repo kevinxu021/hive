@@ -18,15 +18,19 @@
 
 package org.apache.hadoop.hive.ql.metadata;
 
+import java.io.IOException;
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
 
+import com.google.common.base.Preconditions;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
@@ -180,7 +184,6 @@ public class Table implements Serializable {
       t.setOwner(SessionState.getUserFromAuthenticator());
       // set create time
       t.setCreateTime((int) (System.currentTimeMillis() / 1000));
-
     }
     return t;
   }
@@ -505,6 +508,14 @@ public class Table implements Serializable {
     return null;
   }
 
+  public List<String> getPartColNames() {
+    List<String> partColNames = new ArrayList<String>();
+    for (FieldSchema key : getPartCols()) {
+      partColNames.add(key.getName());
+    }
+    return partColNames;
+  }
+
   public boolean isPartitionKey(String colName) {
     return getPartColByName(colName) == null ? false : true;
   }
@@ -809,15 +820,31 @@ public class Table implements Serializable {
     return tTable.getViewExpandedText();
   }
 
-  public void clearSerDeInfo() {
-    tTable.getSd().getSerdeInfo().getParameters().clear();
-  }
   /**
    * @param viewExpandedText
    *          the expanded view text to set
    */
   public void setViewExpandedText(String viewExpandedText) {
     tTable.setViewExpandedText(viewExpandedText);
+  }
+
+  /**
+   * @return whether this view can be used for rewriting queries
+   */
+  public boolean isRewriteEnabled() {
+    return tTable.isRewriteEnabled();
+  }
+
+  /**
+   * @param rewriteEnabled
+   *          whether this view can be used for rewriting queries
+   */
+  public void setRewriteEnabled(boolean rewriteEnabled) {
+    tTable.setRewriteEnabled(rewriteEnabled);
+  }
+
+  public void clearSerDeInfo() {
+    tTable.getSd().getSerdeInfo().getParameters().clear();
   }
 
   /**
@@ -850,7 +877,7 @@ public class Table implements Serializable {
 
     List<FieldSchema> fsl = getPartCols();
     List<String> tpl = tp.getValues();
-    LinkedHashMap<String, String> spec = new LinkedHashMap<String, String>();
+    LinkedHashMap<String, String> spec = new LinkedHashMap<String, String>(fsl.size());
     for (int i = 0; i < fsl.size(); i++) {
       FieldSchema fs = fsl.get(i);
       String value = tpl.get(i);
@@ -861,6 +888,10 @@ public class Table implements Serializable {
 
   public Table copy() throws HiveException {
     return new Table(tTable.deepCopy());
+  }
+
+  public int getCreateTime() {
+    return tTable.getCreateTime();
   }
 
   public void setCreateTime(int createTime) {
@@ -917,6 +948,16 @@ public class Table implements Serializable {
     }
   }
 
+  public boolean isEmpty() throws HiveException {
+    Preconditions.checkNotNull(getPath());
+    try {
+      FileSystem fs = FileSystem.get(getPath().toUri(), SessionState.getSessionConf());
+      return !fs.exists(getPath()) || fs.listStatus(getPath(), FileUtils.HIDDEN_FILES_PATH_FILTER).length == 0;
+    } catch (IOException e) {
+      throw new HiveException(e);
+    }
+  }
+
   public boolean isTemporary() {
     return tTable.isTemporary();
   }
@@ -945,7 +986,7 @@ public class Table implements Serializable {
 
   public static void validateColumns(List<FieldSchema> columns, List<FieldSchema> partCols)
       throws HiveException {
-    List<String> colNames = new ArrayList<String>();
+    Set<String> colNames = new HashSet<>();
     for (FieldSchema partCol: columns) {
       String colName = normalize(partCol.getName());
       if (colNames.contains(colName)) {

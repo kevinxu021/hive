@@ -7,10 +7,16 @@ CREATE TABLE T1(a STRING, b STRING, c STRING) ROW FORMAT DELIMITED FIELDS TERMIN
 
 LOAD DATA LOCAL INPATH '../../data/files/grouping_sets.txt' INTO TABLE T1;
 
+-- SORT_QUERY_RESULTS
+
 -- This tests that cubes and rollups work fine where the source is a sub-query
 EXPLAIN
 SELECT a, b, count(*) FROM
 (SELECT a, b, count(1) from T1 group by a, b) subq1 group by a, b with cube;
+
+EXPLAIN
+SELECT a, b, count(*) FROM
+(SELECT a, b, count(1) from T1 group by a, b) subq1 group by cube(a, b);
 
 SELECT a, b, count(*) FROM
 (SELECT a, b, count(1) from T1 group by a, b) subq1 group by a, b with cube;

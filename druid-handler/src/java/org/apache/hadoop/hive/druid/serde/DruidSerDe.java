@@ -21,37 +21,63 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.sql.Timestamp;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Properties;
 
+import org.apache.calcite.adapter.druid.DruidTable;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hive.common.type.HiveDecimal;
 import org.apache.hadoop.hive.conf.Constants;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.druid.DruidStorageHandler;
 import org.apache.hadoop.hive.druid.DruidStorageHandlerUtils;
-import org.apache.hadoop.hive.ql.optimizer.calcite.druid.DruidTable;
+import org.apache.hadoop.hive.ql.exec.Utilities;
+import org.apache.hadoop.hive.serde.serdeConstants;
 import org.apache.hadoop.hive.serde2.AbstractSerDe;
 import org.apache.hadoop.hive.serde2.SerDeException;
 import org.apache.hadoop.hive.serde2.SerDeSpec;
 import org.apache.hadoop.hive.serde2.SerDeStats;
+import org.apache.hadoop.hive.serde2.io.ByteWritable;
+import org.apache.hadoop.hive.serde2.io.DoubleWritable;
+import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
+import org.apache.hadoop.hive.serde2.io.ShortWritable;
 import org.apache.hadoop.hive.serde2.io.TimestampWritable;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorFactory;
+import org.apache.hadoop.hive.serde2.objectinspector.StructField;
+import org.apache.hadoop.hive.serde2.objectinspector.StructObjectInspector;
+import org.apache.hadoop.hive.serde2.objectinspector.primitive.ByteObjectInspector;
+import org.apache.hadoop.hive.serde2.objectinspector.primitive.DoubleObjectInspector;
+import org.apache.hadoop.hive.serde2.objectinspector.primitive.FloatObjectInspector;
+import org.apache.hadoop.hive.serde2.objectinspector.primitive.HiveDecimalObjectInspector;
+import org.apache.hadoop.hive.serde2.objectinspector.primitive.IntObjectInspector;
+import org.apache.hadoop.hive.serde2.objectinspector.primitive.LongObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory;
+import org.apache.hadoop.hive.serde2.objectinspector.primitive.ShortObjectInspector;
+import org.apache.hadoop.hive.serde2.objectinspector.primitive.StringObjectInspector;
+import org.apache.hadoop.hive.serde2.objectinspector.primitive.TimestampObjectInspector;
 import org.apache.hadoop.hive.serde2.typeinfo.PrimitiveTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoFactory;
 import org.apache.hadoop.io.FloatWritable;
+import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.LongWritable;
-import org.apache.hadoop.io.NullWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.util.StringUtils;
+import org.joda.time.Period;
+import org.joda.time.format.ISODateTimeFormat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.google.common.base.Function;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
 import com.metamx.common.lifecycle.Lifecycle;
+import com.metamx.common.parsers.ParseException;
 import com.metamx.http.client.HttpClient;
 import com.metamx.http.client.HttpClientConfig;
 import com.metamx.http.client.HttpClientInit;
@@ -62,6 +88,8 @@ import io.druid.query.Query;
 import io.druid.query.aggregation.AggregatorFactory;
 import io.druid.query.aggregation.PostAggregator;
 import io.druid.query.dimension.DimensionSpec;
+import io.druid.query.dimension.ExtractionDimensionSpec;
+import io.druid.query.extraction.TimeFormatExtractionFn;
 import io.druid.query.groupby.GroupByQuery;
 import io.druid.query.metadata.metadata.ColumnAnalysis;
 import io.druid.query.metadata.metadata.SegmentAnalysis;
@@ -73,7 +101,7 @@ import io.druid.query.topn.TopNQuery;
 /**
  * DruidSerDe that is used to  deserialize objects from a Druid data source.
  */
-@SerDeSpec(schemaProps = {Constants.DRUID_DATA_SOURCE})
+@SerDeSpec(schemaProps = { Constants.DRUID_DATA_SOURCE })
 public class DruidSerDe extends AbstractSerDe {
 
   protected static final Logger LOG = LoggerFactory.getLogger(DruidSerDe.class);
@@ -82,9 +110,9 @@ public class DruidSerDe extends AbstractSerDe {
   private PrimitiveTypeInfo[] types;
   private ObjectInspector inspector;
 
-
   @Override
   public void initialize(Configuration configuration, Properties properties) throws SerDeException {
+
     final List<String> columnNames = new ArrayList<>();
     final List<PrimitiveTypeInfo> columnTypes = new ArrayList<>();
     List<ObjectInspector> inspectors = new ArrayList<>();
@@ -92,78 +120,138 @@ public class DruidSerDe extends AbstractSerDe {
     // Druid query
     String druidQuery = properties.getProperty(Constants.DRUID_QUERY_JSON);
     if (druidQuery == null) {
-      // No query. We need to create a Druid Segment Metadata query that retrieves all
-      // columns present in the data source (dimensions and metrics).
-      // Create Segment Metadata Query
-      String dataSource = properties.getProperty(Constants.DRUID_DATA_SOURCE);
-      if (dataSource == null) {
-        throw new SerDeException("Druid data source not specified; use " +
-                Constants.DRUID_DATA_SOURCE + " in table properties");
-      }
-      SegmentMetadataQueryBuilder builder = new Druids.SegmentMetadataQueryBuilder();
-      builder.dataSource(dataSource);
-      builder.merge(true);
-      builder.analysisTypes();
-      SegmentMetadataQuery query = builder.build();
+      // No query. Either it is a CTAS, or we need to create a Druid
+      // Segment Metadata query that retrieves all columns present in
+      // the data source (dimensions and metrics).
+      if (!org.apache.commons.lang3.StringUtils
+              .isEmpty(properties.getProperty(serdeConstants.LIST_COLUMNS))
+              && !org.apache.commons.lang3.StringUtils
+              .isEmpty(properties.getProperty(serdeConstants.LIST_COLUMN_TYPES))) {
+        columnNames.addAll(Utilities.getColumnNames(properties));
+        if (!columnNames.contains(DruidTable.DEFAULT_TIMESTAMP_COLUMN)) {
+          throw new SerDeException("Timestamp column (' " + DruidTable.DEFAULT_TIMESTAMP_COLUMN +
+                  "') not specified in create table; list of columns is : " +
+                  properties.getProperty(serdeConstants.LIST_COLUMNS));
+        }
+        columnTypes.addAll(Lists.transform(Utilities.getColumnTypes(properties),
+                new Function<String, PrimitiveTypeInfo>() {
+                  @Override
+                  public PrimitiveTypeInfo apply(String type) {
+                    return TypeInfoFactory.getPrimitiveTypeInfo(type);
+                  }
+                }
+        ));
+        inspectors.addAll(Lists.transform(columnTypes,
+                new Function<PrimitiveTypeInfo, ObjectInspector>() {
+                  @Override
+                  public ObjectInspector apply(PrimitiveTypeInfo type) {
+                    return PrimitiveObjectInspectorFactory
+                            .getPrimitiveWritableObjectInspector(type);
+                  }
+                }
+        ));
+        columns = columnNames.toArray(new String[columnNames.size()]);
+        types = columnTypes.toArray(new PrimitiveTypeInfo[columnTypes.size()]);
+        inspector = ObjectInspectorFactory
+                .getStandardStructObjectInspector(columnNames, inspectors);
+      } else {
+        String dataSource = properties.getProperty(Constants.DRUID_DATA_SOURCE);
+        if (dataSource == null) {
+          throw new SerDeException("Druid data source not specified; use " +
+                  Constants.DRUID_DATA_SOURCE + " in table properties");
+        }
+        SegmentMetadataQueryBuilder builder = new Druids.SegmentMetadataQueryBuilder();
+        builder.dataSource(dataSource);
+        builder.merge(true);
+        builder.analysisTypes();
+        SegmentMetadataQuery query = builder.build();
 
-      // Execute query in Druid
-      String address = HiveConf.getVar(configuration,
-              HiveConf.ConfVars.HIVE_DRUID_BROKER_DEFAULT_ADDRESS);
-      if (org.apache.commons.lang3.StringUtils.isEmpty(address)) {
-        throw new SerDeException("Druid broker address not specified in configuration");
-      }
+        // Execute query in Druid
+        String address = HiveConf.getVar(configuration,
+                HiveConf.ConfVars.HIVE_DRUID_BROKER_DEFAULT_ADDRESS
+        );
+        if (org.apache.commons.lang3.StringUtils.isEmpty(address)) {
+          throw new SerDeException("Druid broker address not specified in configuration");
+        }
 
-      // Infer schema
-      SegmentAnalysis schemaInfo;
-      try {
-        schemaInfo = submitMetadataRequest(address, query);
-      } catch (IOException e) {
-        throw new SerDeException(e);
-      }
-      for (Entry<String,ColumnAnalysis> columnInfo : schemaInfo.getColumns().entrySet()) {
-        if (columnInfo.getKey().equals(DruidTable.DEFAULT_TIMESTAMP_COLUMN)) {
-          // Special handling for timestamp column
+        // Infer schema
+        SegmentAnalysis schemaInfo;
+        try {
+          schemaInfo = submitMetadataRequest(address, query);
+        } catch (IOException e) {
+          throw new SerDeException(e);
+        }
+        for (Entry<String, ColumnAnalysis> columnInfo : schemaInfo.getColumns().entrySet()) {
+          if (columnInfo.getKey().equals(DruidTable.DEFAULT_TIMESTAMP_COLUMN)) {
+            // Special handling for timestamp column
+            columnNames.add(columnInfo.getKey()); // field name
+            PrimitiveTypeInfo type = TypeInfoFactory.timestampTypeInfo; // field type
+            columnTypes.add(type);
+            inspectors
+                    .add(PrimitiveObjectInspectorFactory.getPrimitiveWritableObjectInspector(type));
+            continue;
+          }
           columnNames.add(columnInfo.getKey()); // field name
-          PrimitiveTypeInfo type = TypeInfoFactory.timestampTypeInfo; // field type
+          PrimitiveTypeInfo type = DruidSerDeUtils.convertDruidToHiveType(
+                  columnInfo.getValue().getType()); // field type
           columnTypes.add(type);
           inspectors.add(PrimitiveObjectInspectorFactory.getPrimitiveWritableObjectInspector(type));
-          continue;
         }
-        columnNames.add(columnInfo.getKey()); // field name
-        PrimitiveTypeInfo type = DruidSerDeUtils.convertDruidToHiveType(
-                columnInfo.getValue().getType()); // field type
-        columnTypes.add(type);
-        inspectors.add(PrimitiveObjectInspectorFactory.getPrimitiveWritableObjectInspector(type));
+        columns = columnNames.toArray(new String[columnNames.size()]);
+        types = columnTypes.toArray(new PrimitiveTypeInfo[columnTypes.size()]);
+        inspector = ObjectInspectorFactory
+                .getStandardStructObjectInspector(columnNames, inspectors);
       }
-      columns = columnNames.toArray(new String[columnNames.size()]);
-      types = columnTypes.toArray(new PrimitiveTypeInfo[columnTypes.size()]);
-      inspector = ObjectInspectorFactory.getStandardStructObjectInspector(columnNames, inspectors);
     } else {
       // Query is specified, we can extract the results schema from the query
       Query<?> query;
       try {
         query = DruidStorageHandlerUtils.JSON_MAPPER.readValue(druidQuery, Query.class);
+
+        // Extract column names and types (if present)
+        ImmutableMap.Builder<String, PrimitiveTypeInfo> mapColumnNamesTypes = ImmutableMap.builder();
+        if (!org.apache.commons.lang3.StringUtils
+                .isEmpty(properties.getProperty(serdeConstants.LIST_COLUMNS))
+                && !org.apache.commons.lang3.StringUtils
+                .isEmpty(properties.getProperty(serdeConstants.LIST_COLUMN_TYPES))) {
+          List<String> propColumnNames = Utilities.getColumnNames(properties);
+          List<String> propColumnTypes = Utilities.getColumnTypes(properties);
+          for (int i = 0; i < propColumnNames.size(); i++) {
+            mapColumnNamesTypes.put(
+                    propColumnNames.get(i),
+                    TypeInfoFactory.getPrimitiveTypeInfo(propColumnTypes.get(i)));
+          }
+        }
+
+        switch (query.getType()) {
+          case Query.TIMESERIES:
+            inferSchema((TimeseriesQuery) query, columnNames, columnTypes,
+                    mapColumnNamesTypes.build());
+            break;
+          case Query.TOPN:
+            inferSchema((TopNQuery) query, columnNames, columnTypes,
+                    mapColumnNamesTypes.build());
+            break;
+          case Query.SELECT:
+            String address = HiveConf.getVar(configuration,
+                    HiveConf.ConfVars.HIVE_DRUID_BROKER_DEFAULT_ADDRESS);
+            if (org.apache.commons.lang3.StringUtils.isEmpty(address)) {
+              throw new SerDeException("Druid broker address not specified in configuration");
+            }
+            inferSchema((SelectQuery) query, columnNames, columnTypes, address,
+                    mapColumnNamesTypes.build());
+            break;
+          case Query.GROUP_BY:
+            inferSchema((GroupByQuery) query, columnNames, columnTypes,
+                    mapColumnNamesTypes.build());
+            break;
+          default:
+            throw new SerDeException("Not supported Druid query");
+        }
       } catch (Exception e) {
         throw new SerDeException(e);
       }
 
-      switch (query.getType()) {
-        case Query.TIMESERIES:
-          inferSchema((TimeseriesQuery) query, columnNames, columnTypes);
-          break;
-        case Query.TOPN:
-          inferSchema((TopNQuery) query, columnNames, columnTypes);
-          break;
-        case Query.SELECT:
-          inferSchema((SelectQuery) query, columnNames, columnTypes);
-          break;
-        case Query.GROUP_BY:
-          inferSchema((GroupByQuery) query, columnNames, columnTypes);
-          break;
-        default:
-          throw new SerDeException("Not supported Druid query");
-      }
-    
       columns = new String[columnNames.size()];
       types = new PrimitiveTypeInfo[columnNames.size()];
       for (int i = 0; i < columnTypes.size(); ++i) {
@@ -184,11 +272,11 @@ public class DruidSerDe extends AbstractSerDe {
   /* Submits the request and returns */
   protected SegmentAnalysis submitMetadataRequest(String address, SegmentMetadataQuery query)
           throws SerDeException, IOException {
-    HttpClient client = HttpClientInit.createClient(HttpClientConfig.builder().build(), new Lifecycle());
     InputStream response;
     try {
-      response = DruidStorageHandlerUtils.submitRequest(client,
-              DruidStorageHandlerUtils.createRequest(address, query));
+      response = DruidStorageHandlerUtils.submitRequest(DruidStorageHandler.getHttpClient(),
+              DruidStorageHandlerUtils.createRequest(address, query)
+      );
     } catch (Exception e) {
       throw new SerDeException(StringUtils.stringifyException(e));
     }
@@ -197,7 +285,9 @@ public class DruidSerDe extends AbstractSerDe {
     List<SegmentAnalysis> resultsList;
     try {
       resultsList = DruidStorageHandlerUtils.SMILE_MAPPER.readValue(response,
-              new TypeReference<List<SegmentAnalysis>>() {});
+              new TypeReference<List<SegmentAnalysis>>() {
+              }
+      );
     } catch (Exception e) {
       response.close();
       throw new SerDeException(StringUtils.stringifyException(e));
@@ -213,17 +303,27 @@ public class DruidSerDe extends AbstractSerDe {
   }
 
   /* Timeseries query */
-  private void inferSchema(TimeseriesQuery query, List<String> columnNames,
-          List<PrimitiveTypeInfo> columnTypes) {
+  private void inferSchema(TimeseriesQuery query,
+          List<String> columnNames, List<PrimitiveTypeInfo> columnTypes,
+          Map<String, PrimitiveTypeInfo> mapColumnNamesTypes) {
     // Timestamp column
     columnNames.add(DruidTable.DEFAULT_TIMESTAMP_COLUMN);
     columnTypes.add(TypeInfoFactory.timestampTypeInfo);
     // Aggregator columns
     for (AggregatorFactory af : query.getAggregatorSpecs()) {
       columnNames.add(af.getName());
-      columnTypes.add(DruidSerDeUtils.convertDruidToHiveType(af.getTypeName()));
+      PrimitiveTypeInfo typeInfo = mapColumnNamesTypes.get(af.getName());
+      if (typeInfo != null) {
+        // If datasource was created by Hive, we consider Hive type
+        columnTypes.add(typeInfo);
+      } else {
+        columnTypes.add(DruidSerDeUtils.convertDruidToHiveType(af.getTypeName()));
+      }
     }
     // Post-aggregator columns
+    // TODO: Currently Calcite only infers avg for post-aggregate,
+    // but once we recognize other functions, we will need to infer
+    // different types for post-aggregation functions
     for (PostAggregator pa : query.getPostAggregatorSpecs()) {
       columnNames.add(pa.getName());
       columnTypes.add(TypeInfoFactory.floatTypeInfo);
@@ -231,7 +331,9 @@ public class DruidSerDe extends AbstractSerDe {
   }
 
   /* TopN query */
-  private void inferSchema(TopNQuery query, List<String> columnNames, List<PrimitiveTypeInfo> columnTypes) {
+  private void inferSchema(TopNQuery query,
+          List<String> columnNames, List<PrimitiveTypeInfo> columnTypes,
+          Map<String, PrimitiveTypeInfo> mapColumnNamesTypes) {
     // Timestamp column
     columnNames.add(DruidTable.DEFAULT_TIMESTAMP_COLUMN);
     columnTypes.add(TypeInfoFactory.timestampTypeInfo);
@@ -241,9 +343,18 @@ public class DruidSerDe extends AbstractSerDe {
     // Aggregator columns
     for (AggregatorFactory af : query.getAggregatorSpecs()) {
       columnNames.add(af.getName());
-      columnTypes.add(DruidSerDeUtils.convertDruidToHiveType(af.getTypeName()));
+      PrimitiveTypeInfo typeInfo = mapColumnNamesTypes.get(af.getName());
+      if (typeInfo != null) {
+        // If datasource was created by Hive, we consider Hive type
+        columnTypes.add(typeInfo);
+      } else {
+        columnTypes.add(DruidSerDeUtils.convertDruidToHiveType(af.getTypeName()));
+      }
     }
     // Post-aggregator columns
+    // TODO: Currently Calcite only infers avg for post-aggregate,
+    // but once we recognize other functions, we will need to infer
+    // different types for post-aggregation functions
     for (PostAggregator pa : query.getPostAggregatorSpecs()) {
       columnNames.add(pa.getName());
       columnTypes.add(TypeInfoFactory.floatTypeInfo);
@@ -251,8 +362,10 @@ public class DruidSerDe extends AbstractSerDe {
   }
 
   /* Select query */
-  private void inferSchema(SelectQuery query, List<String> columnNames,
-          List<PrimitiveTypeInfo> columnTypes) {
+  private void inferSchema(SelectQuery query,
+          List<String> columnNames, List<PrimitiveTypeInfo> columnTypes,
+          String address, Map<String, PrimitiveTypeInfo> mapColumnNamesTypes)
+                  throws SerDeException {
     // Timestamp column
     columnNames.add(DruidTable.DEFAULT_TIMESTAMP_COLUMN);
     columnTypes.add(TypeInfoFactory.timestampTypeInfo);
@@ -261,29 +374,63 @@ public class DruidSerDe extends AbstractSerDe {
       columnNames.add(ds.getOutputName());
       columnTypes.add(TypeInfoFactory.stringTypeInfo);
     }
-    // Metric columns
+    // The type for metric columns is not explicit in the query, thus in this case
+    // we need to emit a metadata query to know their type
+    SegmentMetadataQueryBuilder builder = new Druids.SegmentMetadataQueryBuilder();
+    builder.dataSource(query.getDataSource());
+    builder.merge(true);
+    builder.analysisTypes();
+    SegmentMetadataQuery metadataQuery = builder.build();
+    // Execute query in Druid
+    SegmentAnalysis schemaInfo;
+    try {
+      schemaInfo = submitMetadataRequest(address, metadataQuery);
+    } catch (IOException e) {
+      throw new SerDeException(e);
+    }
+    if (schemaInfo == null) {
+      throw new SerDeException("Connected to Druid but could not retrieve datasource information");
+    }
     for (String metric : query.getMetrics()) {
       columnNames.add(metric);
-      columnTypes.add(TypeInfoFactory.floatTypeInfo);
+      PrimitiveTypeInfo typeInfo = mapColumnNamesTypes.get(metric);
+      if (typeInfo != null) {
+        // If datasource was created by Hive, we consider Hive type
+        columnTypes.add(typeInfo);
+      } else {
+        columnTypes.add(DruidSerDeUtils.convertDruidToHiveType(
+                schemaInfo.getColumns().get(metric).getType()));
+      }
     }
   }
 
   /* GroupBy query */
-  private void inferSchema(GroupByQuery query, List<String> columnNames, List<PrimitiveTypeInfo> columnTypes) {
+  private void inferSchema(GroupByQuery query,
+          List<String> columnNames, List<PrimitiveTypeInfo> columnTypes,
+          Map<String, PrimitiveTypeInfo> mapColumnNamesTypes) {
     // Timestamp column
     columnNames.add(DruidTable.DEFAULT_TIMESTAMP_COLUMN);
     columnTypes.add(TypeInfoFactory.timestampTypeInfo);
     // Dimension columns
     for (DimensionSpec ds : query.getDimensions()) {
       columnNames.add(ds.getOutputName());
-      columnTypes.add(TypeInfoFactory.stringTypeInfo);
+      columnTypes.add(DruidSerDeUtils.extractTypeFromDimension(ds));
     }
     // Aggregator columns
     for (AggregatorFactory af : query.getAggregatorSpecs()) {
       columnNames.add(af.getName());
-      columnTypes.add(DruidSerDeUtils.convertDruidToHiveType(af.getTypeName()));
+      PrimitiveTypeInfo typeInfo = mapColumnNamesTypes.get(af.getName());
+      if (typeInfo != null) {
+        // If datasource was created by Hive, we consider Hive type
+        columnTypes.add(typeInfo);
+      } else {
+        columnTypes.add(DruidSerDeUtils.convertDruidToHiveType(af.getTypeName()));
+      }
     }
     // Post-aggregator columns
+    // TODO: Currently Calcite only infers avg for post-aggregate,
+    // but once we recognize other functions, we will need to infer
+    // different types for post-aggregation functions
     for (PostAggregator pa : query.getPostAggregatorSpecs()) {
       columnNames.add(pa.getName());
       columnTypes.add(TypeInfoFactory.floatTypeInfo);
@@ -292,17 +439,80 @@ public class DruidSerDe extends AbstractSerDe {
 
   @Override
   public Class<? extends Writable> getSerializedClass() {
-    return NullWritable.class;
+    return DruidWritable.class;
   }
 
   @Override
   public Writable serialize(Object o, ObjectInspector objectInspector) throws SerDeException {
-    return NullWritable.get();
+    if (objectInspector.getCategory() != ObjectInspector.Category.STRUCT) {
+      throw new SerDeException(getClass().toString()
+              + " can only serialize struct types, but we got: "
+              + objectInspector.getTypeName());
+    }
+
+    // Prepare the field ObjectInspectors
+    StructObjectInspector soi = (StructObjectInspector) objectInspector;
+    List<? extends StructField> fields = soi.getAllStructFieldRefs();
+    List<Object> values = soi.getStructFieldsDataAsList(o);
+    // We deserialize the result
+    Map<String, Object> value = new HashMap<>();
+    for (int i = 0; i < columns.length; i++) {
+      if (values.get(i) == null) {
+        // null, we just add it
+        value.put(columns[i], null);
+        continue;
+      }
+      final Object res;
+      switch (types[i].getPrimitiveCategory()) {
+        case TIMESTAMP:
+          res = ((TimestampObjectInspector) fields.get(i).getFieldObjectInspector())
+                  .getPrimitiveJavaObject(
+                          values.get(i)).getTime();
+          break;
+        case BYTE:
+          res = ((ByteObjectInspector) fields.get(i).getFieldObjectInspector()).get(values.get(i));
+          break;
+        case SHORT:
+          res = ((ShortObjectInspector) fields.get(i).getFieldObjectInspector()).get(values.get(i));
+          break;
+        case INT:
+          res = ((IntObjectInspector) fields.get(i).getFieldObjectInspector()).get(values.get(i));
+          break;
+        case LONG:
+          res = ((LongObjectInspector) fields.get(i).getFieldObjectInspector()).get(values.get(i));
+          break;
+        case FLOAT:
+          res = ((FloatObjectInspector) fields.get(i).getFieldObjectInspector()).get(values.get(i));
+          break;
+        case DOUBLE:
+          res = ((DoubleObjectInspector) fields.get(i).getFieldObjectInspector())
+                  .get(values.get(i));
+          break;
+        case DECIMAL:
+          res = ((HiveDecimalObjectInspector) fields.get(i).getFieldObjectInspector())
+                  .getPrimitiveJavaObject(values.get(i)).doubleValue();
+          break;
+        case STRING:
+          res = ((StringObjectInspector) fields.get(i).getFieldObjectInspector())
+                  .getPrimitiveJavaObject(
+                          values.get(i));
+          break;
+        default:
+          throw new SerDeException("Unknown type: " + types[i].getPrimitiveCategory());
+      }
+      value.put(columns[i], res);
+    }
+    value.put(Constants.DRUID_TIMESTAMP_GRANULARITY_COL_NAME,
+            ((TimestampObjectInspector) fields.get(columns.length).getFieldObjectInspector())
+                    .getPrimitiveJavaObject(values.get(columns.length)).getTime()
+    );
+    return new DruidWritable(value);
   }
 
   @Override
   public SerDeStats getSerDeStats() {
-    throw new UnsupportedOperationException("SerdeStats not supported.");
+    // no support for statistics
+    return null;
   }
 
   @Override
@@ -317,13 +527,28 @@ public class DruidSerDe extends AbstractSerDe {
       }
       switch (types[i].getPrimitiveCategory()) {
         case TIMESTAMP:
-          output.add(new TimestampWritable(new Timestamp((Long)value)));
+          output.add(new TimestampWritable(new Timestamp((Long) value)));
+          break;
+        case BYTE:
+          output.add(new ByteWritable(((Number) value).byteValue()));
+          break;
+        case SHORT:
+          output.add(new ShortWritable(((Number) value).shortValue()));
+          break;
+        case INT:
+          output.add(new IntWritable(((Number) value).intValue()));
           break;
         case LONG:
-          output.add(new LongWritable(((Number)value).longValue()));
+          output.add(new LongWritable(((Number) value).longValue()));
           break;
         case FLOAT:
-          output.add(new FloatWritable(((Number)value).floatValue()));
+          output.add(new FloatWritable(((Number) value).floatValue()));
+          break;
+        case DOUBLE:
+          output.add(new DoubleWritable(((Number) value).doubleValue()));
+          break;
+        case DECIMAL:
+          output.add(new HiveDecimalWritable(HiveDecimal.create(((Number) value).doubleValue())));
           break;
         case STRING:
           output.add(new Text(value.toString()));

@@ -27,4 +27,6 @@ hcatalog/webhcat/java-client/target
 hcatalog/storage-handlers/hbase/target
 hcatalog/webhcat/svr/target
 conf/hive-default.xml.template
+itests/hive-blobstore/src/test/resources/blobstore-conf.xml
 .DS_Store
+patchprocess

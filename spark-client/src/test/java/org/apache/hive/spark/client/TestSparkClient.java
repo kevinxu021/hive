@@ -17,6 +17,7 @@
 
 package org.apache.hive.spark.client;
 
+import com.google.common.collect.Lists;
 import org.apache.hive.spark.client.JobHandle.Listener;
 
 import org.slf4j.Logger;
@@ -24,8 +25,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.mockito.invocation.InvocationOnMock;
-
-import org.mockito.stubbing.Answer;
 
 import org.mockito.stubbing.Answer;
 
@@ -39,6 +38,7 @@ import java.io.Serializable;
 import java.net.URI;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
@@ -94,8 +94,8 @@ public class TestSparkClient {
       @Override
       public void call(SparkClient client) throws Exception {
         JobHandle.Listener<String> listener = newListener();
-        JobHandle<String> handle = client.submit(new SimpleJob());
-        handle.addListener(listener);
+        List<JobHandle.Listener<String>> listeners = Lists.newArrayList(listener);;
+        JobHandle<String> handle = client.submit(new SimpleJob(), listeners);
         assertEquals("hello", handle.get(TIMEOUT, TimeUnit.SECONDS));
 
         // Try an invalid state transition on the handle. This ensures that the actual state
@@ -103,7 +103,6 @@ public class TestSparkClient {
         // state changes.
         assertFalse(((JobHandleImpl<String>)handle).changeState(JobHandle.State.SENT));
 
-        verify(listener).onJobQueued(handle);
         verify(listener).onJobStarted(handle);
         verify(listener).onJobSucceeded(same(handle), eq(handle.get()));
       }
@@ -127,8 +126,8 @@ public class TestSparkClient {
       @Override
       public void call(SparkClient client) throws Exception {
         JobHandle.Listener<String> listener = newListener();
-        JobHandle<String> handle = client.submit(new ErrorJob());
-        handle.addListener(listener);
+        List<JobHandle.Listener<String>> listeners = Lists.newArrayList(listener);
+        JobHandle<String> handle = client.submit(new ErrorJob(), listeners);
         try {
           handle.get(TIMEOUT, TimeUnit.SECONDS);
           fail("Should have thrown an exception.");
@@ -177,8 +176,8 @@ public class TestSparkClient {
       @Override
       public void call(SparkClient client) throws Exception {
         JobHandle.Listener<Integer> listener = newListener();
-        JobHandle<Integer> future = client.submit(new AsyncSparkJob());
-        future.addListener(listener);
+        List<JobHandle.Listener<Integer>> listeners = Lists.newArrayList(listener);
+        JobHandle<Integer> future = client.submit(new AsyncSparkJob(), listeners);
         future.get(TIMEOUT, TimeUnit.SECONDS);
         MetricsCollection metrics = future.getMetrics();
         assertEquals(1, metrics.getJobIds().size());
@@ -187,8 +186,8 @@ public class TestSparkClient {
           eq(metrics.getJobIds().iterator().next()));
 
         JobHandle.Listener<Integer> listener2 = newListener();
-        JobHandle<Integer> future2 = client.submit(new AsyncSparkJob());
-        future2.addListener(listener2);
+        List<JobHandle.Listener<Integer>> listeners2 = Lists.newArrayList(listener2);
+        JobHandle<Integer> future2 = client.submit(new AsyncSparkJob(), listeners2);
         future2.get(TIMEOUT, TimeUnit.SECONDS);
         MetricsCollection metrics2 = future2.getMetrics();
         assertEquals(1, metrics2.getJobIds().size());

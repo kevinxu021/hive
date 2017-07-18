@@ -30,6 +30,7 @@ import org.apache.hadoop.hive.ql.exec.UDF;
 import org.apache.hadoop.hive.ql.processors.DfsProcessor;
 import org.apache.hive.common.util.HiveVersionInfo;
 import org.apache.hive.jdbc.Utils.JdbcConnectionParams;
+import org.apache.hive.service.cli.HiveSQLException;
 import org.apache.hive.service.cli.operation.ClassicTableTypeMapping;
 import org.apache.hive.service.cli.operation.ClassicTableTypeMapping.ClassicTableTypes;
 import org.apache.hive.service.cli.operation.HiveTableTypeMapping;
@@ -95,6 +96,7 @@ public class TestJdbcDriver2 {
   private static final String testDbName = "testjdbcdriver";
   private static final String defaultDbName = "default";
   private static final String tableName = "testjdbcdrivertbl";
+  private static final String tableNameWithPk = "pktable";
   private static final String tableComment = "Simple table";
   private static final String viewName = "testjdbcdriverview";
   private static final String viewComment = "Simple view";
@@ -106,43 +108,16 @@ public class TestJdbcDriver2 {
   private static final String dataTypeTableComment = "Table with many column data types";
   private static final String externalTableName = "testjdbcdriverexttbl";
   private static final String externalTableComment = "An external table";
-
-  private final HiveConf conf;
-  public static String dataFileDir;
-  private final Path dataFilePath;
-  private final int dataFileRowCount;
-  private final Path dataTypeDataFilePath;
+  private static HiveConf conf;
+  private static String dataFileDir;
+  private static Path dataFilePath;
+  private static int dataFileRowCount;
+  private static Path dataTypeDataFilePath;
   // Creating a new connection is expensive, so we'll reuse this object
   private static Connection con;
   private static final float floatCompareDelta = 0.0001f;
 
   @Rule public ExpectedException thrown = ExpectedException.none();
-
-  @SuppressWarnings("deprecation")
-  public TestJdbcDriver2() throws SQLException, ClassNotFoundException {
-    conf = new HiveConf(TestJdbcDriver2.class);
-    dataFileDir = conf.get("test.data.files").replace('\\', '/')
-        .replace("c:", "");
-    dataFilePath = new Path(dataFileDir, "kv1.txt");
-    dataFileRowCount = 500;
-    dataTypeDataFilePath = new Path(dataFileDir, "datatypes.txt");
-    // Create test database and base tables once for all the test
-    Class.forName(driverName);
-    con = getConnection(defaultDbName + ";create=true");
-    System.setProperty(ConfVars.HIVE_SERVER2_LOGGING_OPERATION_LEVEL.varname, "verbose");
-    System.setProperty(ConfVars.HIVEMAPREDMODE.varname, "nonstrict");
-    System.setProperty(ConfVars.HIVE_AUTHORIZATION_MANAGER.varname,
-        "org.apache.hadoop.hive.ql.security.authorization.DefaultHiveAuthorizationProvider");
-    System.setProperty(ConfVars.HIVE_SERVER2_PARALLEL_OPS_IN_SESSION.varname, "false");
-    Statement stmt = con.createStatement();
-    assertNotNull("Statement is null", stmt);
-    stmt.execute("set hive.support.concurrency = false");
-    stmt.execute("drop database if exists " + testDbName + " cascade");
-    stmt.execute("create database " + testDbName);
-    stmt.execute("use " + testDbName);
-    createTestTables(stmt, testDbName);
-    stmt.close();
-  }
 
   private static Connection getConnection(String postfix) throws SQLException {
     Connection con1;
@@ -152,7 +127,7 @@ public class TestJdbcDriver2 {
     return con1;
   }
 
-  private void createTestTables(Statement stmt, String testDbName) throws SQLException{
+  private static void createTestTables(Statement stmt, String testDbName) throws SQLException{
     // We've already dropped testDbName in constructor & we also drop it in tearDownAfterClass
     String prefix = testDbName + ".";
     String tableName = prefix + TestJdbcDriver2.tableName;
@@ -165,6 +140,8 @@ public class TestJdbcDriver2 {
     stmt.execute("create table " + tableName
         + " (under_col int comment 'the under column', value string) comment '" + tableComment
         + "'");
+    stmt.execute("create table " + tableNameWithPk
+        + " (a STRING, b STRING, primary key (a) disable) ");
     // load data
     stmt.execute("load data local inpath '" + dataFilePath.toString() + "' into table " + tableName);
 
@@ -202,8 +179,31 @@ public class TestJdbcDriver2 {
     stmt.close();
   }
 
+  @SuppressWarnings("deprecation")
   @BeforeClass
   public static void setUpBeforeClass() throws SQLException, ClassNotFoundException {
+    conf = new HiveConf(TestJdbcDriver2.class);
+    dataFileDir = conf.get("test.data.files").replace('\\', '/')
+        .replace("c:", "");
+    dataFilePath = new Path(dataFileDir, "kv1.txt");
+    dataFileRowCount = 500;
+    dataTypeDataFilePath = new Path(dataFileDir, "datatypes.txt");
+    // Create test database and base tables once for all the test
+    Class.forName(driverName);
+    System.setProperty(ConfVars.HIVE_SERVER2_LOGGING_OPERATION_LEVEL.varname, "verbose");
+    System.setProperty(ConfVars.HIVEMAPREDMODE.varname, "nonstrict");
+    System.setProperty(ConfVars.HIVE_AUTHORIZATION_MANAGER.varname,
+        "org.apache.hadoop.hive.ql.security.authorization.DefaultHiveAuthorizationProvider");
+    System.setProperty(ConfVars.HIVE_SERVER2_PARALLEL_OPS_IN_SESSION.varname, "false");
+    con = getConnection(defaultDbName + ";create=true");
+    Statement stmt = con.createStatement();
+    assertNotNull("Statement is null", stmt);
+    stmt.execute("set hive.support.concurrency = false");
+    stmt.execute("drop database if exists " + testDbName + " cascade");
+    stmt.execute("create database " + testDbName);
+    stmt.execute("use " + testDbName);
+    createTestTables(stmt, testDbName);
+    stmt.close();
   }
 
   @AfterClass
@@ -214,14 +214,6 @@ public class TestJdbcDriver2 {
     stmt.execute("drop database if exists " + testDbName + " cascade");
     stmt.close();
     con.close();
-  }
-
-  @Before
-  public void setUp() throws Exception {
-  }
-
-  @After
-  public void tearDown() throws Exception {
   }
 
   @Test
@@ -267,6 +259,10 @@ public class TestJdbcDriver2 {
   public void testSerializedExecution() throws Exception {
     HiveStatement stmt1 = (HiveStatement) con.createStatement();
     HiveStatement stmt2 = (HiveStatement) con.createStatement();
+    stmt1.execute("SET hive.driver.parallel.compilation=false");
+    stmt1.execute("SET hive.server2.async.exec.async.compile=false");
+    stmt2.execute("SET hive.driver.parallel.compilation=false");
+    stmt2.execute("SET hive.server2.async.exec.async.compile=false");
     stmt1.execute("create temporary function sleepMsUDF as '" + SleepMsUDF.class.getName() + "'");
     stmt1.execute("create table test_ser_1(i int)");
     stmt1.executeAsync("insert into test_ser_1 select sleepMsUDF(under_col, 500) from "
@@ -582,7 +578,7 @@ public class TestJdbcDriver2 {
 
   @Test
   public void testSetOnConnection() throws Exception {
-    Connection connection = getConnection("test?conf1=conf2;conf3=conf4#var1=var2;var3=var4");
+    Connection connection = getConnection(testDbName + "?conf1=conf2;conf3=conf4#var1=var2;var3=var4");
     try {
       verifyConfValue(connection, "conf1", "conf2");
       verifyConfValue(connection, "conf3", "conf4");
@@ -1084,6 +1080,45 @@ public class TestJdbcDriver2 {
     }
     assertTrue("table name " + tableName
         + " not found in SHOW TABLES result set", testTableExists);
+    stmt.close();
+  }
+
+  @Test
+  public void testShowTablesInDb() throws SQLException {
+    Statement stmt = con.createStatement();
+    assertNotNull("Statement is null", stmt);
+
+    String tableNameInDbUnique = tableName + "_unique";
+    // create a table with a unique name in testDb
+    stmt.execute("drop table if exists " + testDbName + "." + tableNameInDbUnique);
+    stmt.execute("create table " + testDbName + "." + tableNameInDbUnique
+        + " (under_col int comment 'the under column', value string) comment '" + tableComment
+        + "'");
+
+    ResultSet res = stmt.executeQuery("show tables in " + testDbName);
+
+    boolean testTableExists = false;
+    while (res.next()) {
+      assertNotNull("table name is null in result set", res.getString(1));
+      if (tableNameInDbUnique.equalsIgnoreCase(res.getString(1))) {
+        testTableExists = true;
+      }
+    }
+    assertTrue("table name " + tableNameInDbUnique
+        + " not found in SHOW TABLES result set", testTableExists);
+    stmt.execute("drop table if exists " + testDbName + "." + tableNameInDbUnique);
+    stmt.close();
+  }
+
+  @Test
+  public void testInvalidShowTables() throws SQLException {
+    Statement stmt = con.createStatement();
+    assertNotNull("Statement is null", stmt);
+
+    //show tables <dbname> is in invalid show tables syntax. Hive does not return
+    //any tables in this case
+    ResultSet res = stmt.executeQuery("show tables " + testDbName);
+    assertFalse(res.next());
     stmt.close();
   }
 
@@ -1672,7 +1707,7 @@ public class TestJdbcDriver2 {
     assertEquals(meta.getPrecision(12), colRS.getInt("COLUMN_SIZE"));
     assertEquals(meta.getScale(12), colRS.getInt("DECIMAL_DIGITS"));
 
-    assertEquals("c12_1", meta.getColumnName(13));
+    assertEquals("_c12", meta.getColumnName(13));
     assertEquals(Types.INTEGER, meta.getColumnType(13));
     assertEquals("int", meta.getColumnTypeName(13));
     assertEquals(11, meta.getColumnDisplaySize(13));
@@ -1809,8 +1844,19 @@ public class TestJdbcDriver2 {
     assertTrue(colRS.next());
     assertEquals("c2", meta.getColumnName(2));
     assertTrue(colRS.next());
-    assertEquals("c2_2", meta.getColumnName(3));
+    assertEquals("_c2", meta.getColumnName(3));
     stmt.close();
+  }
+
+  @Test
+  public void testResultSetRowProperties() throws SQLException {
+	  Statement stmt = con.createStatement();
+	  ResultSet res =
+	      stmt.executeQuery("select * from "
+	          + dataTypeTableName + " limit 1");
+	  assertFalse(res.rowDeleted());
+	  assertFalse(res.rowInserted());
+	  assertFalse(res.rowUpdated());
   }
 
   // [url] [host] [port] [db]
@@ -1981,7 +2027,7 @@ public class TestJdbcDriver2 {
         stmt.executeQuery("select c12, bin(c12) from " + dataTypeTableName + " where c1=1");
     ResultSetMetaData md = res.getMetaData();
     assertEquals(md.getColumnCount(), 2); // only one result column
-    assertEquals(md.getColumnLabel(2), "c1"); // verify the system generated column name
+    assertEquals(md.getColumnLabel(2), "_c1"); // verify the system generated column name
     assertTrue(res.next());
     assertEquals(res.getLong(1), 1);
     assertEquals(res.getString(2), "1");
@@ -2052,6 +2098,33 @@ public class TestJdbcDriver2 {
     ResultSetMetaData md = res.getMetaData();
     assertEquals(md.getColumnCount(), 6);
     assertFalse(res.next());
+  }
+
+  /**
+   * test testPrimaryKeysNotNull()
+   * @throws SQLException
+   */
+  @Test
+  public void testPrimaryKeysNotNull() throws SQLException {
+    DatabaseMetaData dbmd = con.getMetaData();
+    assertNotNull(dbmd);
+    ResultSet rs = dbmd.getColumns(null, testDbName, tableNameWithPk, "%");
+    int index = 0;
+    while (rs.next()) {
+      int nullableInt = rs.getInt("NULLABLE");
+      String isNullable = rs.getString("IS_NULLABLE");
+      if (index == 0) {
+        assertEquals(nullableInt, 0);
+        assertEquals(isNullable, "NO");
+      } else if (index == 1) {
+        assertEquals(nullableInt, 1);
+        assertEquals(isNullable, "YES");
+      } else {
+        throw new SQLException("Unexpected column.");
+      }
+      index++;
+    }
+    rs.close();
   }
 
   /**
@@ -2257,6 +2330,47 @@ public class TestJdbcDriver2 {
   }
 
   /**
+   *  Tests for query cancellation
+   */
+
+  @Test
+  public void testCancelQueryNotRun() throws Exception {
+    try (final Statement stmt = con.createStatement()){
+      System.out.println("Cancel the Statement without running query ...");
+      stmt.cancel();
+      System.out.println("Executing query: ");
+      stmt.executeQuery(" show databases");
+    }
+  }
+
+  @Test
+  public void testCancelQueryFinished() throws Exception {
+    try (final Statement stmt = con.createStatement()){
+      System.out.println("Executing query: ");
+      stmt.executeQuery(" show databases");
+      System.out.println("Cancel the Statement after running query ...");
+      stmt.cancel();
+    }
+  }
+
+  @Test
+  public void testCancelQueryErrored() throws Exception {
+    final Statement stmt = con.createStatement();
+    try {
+      System.out.println("Executing query: ");
+      stmt.executeQuery("list dbs");
+      fail("Expecting SQLException");
+    } catch (SQLException e) {
+      // No-op
+    }
+
+    // Cancel the query
+    System.out.println("Cancel the Statement ...");
+    stmt.cancel();
+    stmt.close();
+  }
+
+  /**
    * Test the cancellation of a query that is running.
    * We spawn 2 threads - one running the query and
    * the other attempting to cancel.
@@ -2297,6 +2411,62 @@ public class TestJdbcDriver2 {
           // Sleep for 100ms
           Thread.sleep(100);
           System.out.println("Cancelling query: ");
+          stmt.cancel();
+        } catch (Exception e) {
+          // No-op
+        }
+      }
+    });
+    tExecute.start();
+    tCancel.start();
+    tExecute.join();
+    tCancel.join();
+    stmt.close();
+  }
+
+  @Test
+  public void testQueryCancelTwice() throws Exception {
+    String udfName = SleepMsUDF.class.getName();
+    Statement stmt1 = con.createStatement();
+    stmt1.execute("create temporary function sleepMsUDF as '" + udfName + "'");
+    stmt1.close();
+    final Statement stmt = con.createStatement();
+    // Thread executing the query
+    Thread tExecute = new Thread(new Runnable() {
+      @Override
+      public void run() {
+        try {
+          System.out.println("Executing query: ");
+          // The test table has 500 rows, so total query time should be ~ 500*500ms
+          stmt.executeQuery("select sleepMsUDF(t1.under_col, 1) as u0, t1.under_col as u1, " +
+                  "t2.under_col as u2 from " + tableName +  " t1 join " + tableName +
+                  " t2 on t1.under_col = t2.under_col");
+          fail("Expecting SQLException");
+        } catch (SQLException e) {
+          // This thread should throw an exception
+          assertNotNull(e);
+          System.out.println(e.toString());
+        }
+      }
+    });
+    // Thread cancelling the query
+    Thread tCancel = new Thread(new Runnable() {
+      @Override
+      public void run() {
+        // 1st Cancel
+        try {
+          // Sleep for 100ms
+          Thread.sleep(100);
+          System.out.println("Cancelling query: ");
+          stmt.cancel();
+        } catch (Exception e) {
+          // No-op
+        }
+        // 2nd cancel
+        try {
+          // Sleep for 5ms and cancel again
+          Thread.sleep(5);
+          System.out.println("Cancelling query again: ");
           stmt.cancel();
         } catch (Exception e) {
           // No-op
@@ -2752,5 +2922,11 @@ public class TestJdbcDriver2 {
     }
     assertEquals(rowCount, dataFileRowCount);
     stmt.execute("drop table " + tblName);
+  }
+
+  // Test that opening a JDBC connection to a non-existent database throws a HiveSQLException
+  @Test(expected = HiveSQLException.class)
+  public void testConnectInvalidDatabase() throws SQLException {
+    DriverManager.getConnection("jdbc:hive2:///databasedoesnotexist", "", "");
   }
 }

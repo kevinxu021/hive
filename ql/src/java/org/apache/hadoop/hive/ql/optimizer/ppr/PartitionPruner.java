@@ -27,10 +27,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import com.google.common.annotations.VisibleForTesting;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.common.ObjectPair;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.conf.HiveConf.StrictChecks;
@@ -54,6 +50,7 @@ import org.apache.hadoop.hive.ql.parse.SemanticException;
 import org.apache.hadoop.hive.ql.plan.ExprNodeColumnDesc;
 import org.apache.hadoop.hive.ql.plan.ExprNodeConstantDesc;
 import org.apache.hadoop.hive.ql.plan.ExprNodeDesc;
+import org.apache.hadoop.hive.ql.plan.ExprNodeFieldDesc;
 import org.apache.hadoop.hive.ql.plan.ExprNodeGenericFuncDesc;
 import org.apache.hadoop.hive.ql.session.SessionState;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDF;
@@ -65,6 +62,12 @@ import org.apache.hadoop.hive.serde2.objectinspector.PrimitiveObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory;
 import org.apache.hadoop.hive.serde2.typeinfo.PrimitiveTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Preconditions;
+import org.apache.hadoop.hive.ql.plan.ExprNodeDescUtils;
 
 /**
  * The transformation step that does partition pruning.
@@ -168,7 +171,7 @@ public class PartitionPruner extends Transform {
           throws SemanticException {
 
     if (LOG.isTraceEnabled()) {
-      LOG.trace("Started pruning partiton");
+      LOG.trace("Started pruning partition");
       LOG.trace("dbname = " + tab.getDbName());
       LOG.trace("tabname = " + tab.getTableName());
       LOG.trace("prune Expression = " + (prunerExpr == null ? "" : prunerExpr));
@@ -370,7 +373,13 @@ public class PartitionPruner extends Transform {
    */
   static private ExprNodeDesc removeNonPartCols(ExprNodeDesc expr, List<String> partCols,
       Set<String> referred) {
-    if (expr instanceof ExprNodeColumnDesc) {
+    if (expr instanceof ExprNodeFieldDesc) {
+      // Column is not a partition column for the table,
+      // as we do not allow partitions based on complex
+      // list or struct fields.
+      return new ExprNodeConstantDesc(expr.getTypeInfo(), null);
+    }
+    else if (expr instanceof ExprNodeColumnDesc) {
       String column = ((ExprNodeColumnDesc) expr).getColumn();
       if (!partCols.contains(column)) {
         // Column doesn't appear to be a partition column for the table.
@@ -378,10 +387,25 @@ public class PartitionPruner extends Transform {
       }
       referred.add(column);
     }
-    if (expr instanceof ExprNodeGenericFuncDesc) {
+    else if (expr instanceof ExprNodeGenericFuncDesc) {
       List<ExprNodeDesc> children = expr.getChildren();
       for (int i = 0; i < children.size(); ++i) {
-        children.set(i, removeNonPartCols(children.get(i), partCols, referred));
+        ExprNodeDesc other = removeNonPartCols(children.get(i), partCols, referred);
+        if (ExprNodeDescUtils.isNullConstant(other)) {
+          if (FunctionRegistry.isOpAnd(expr)) {
+            // partcol=... AND nonpartcol=...   is replaced with partcol=... AND TRUE
+            // which will be folded to partcol=...
+            // This cannot be done also for OR
+            Preconditions.checkArgument(expr.getTypeInfo().accept(TypeInfoFactory.booleanTypeInfo));
+            other = new ExprNodeConstantDesc(expr.getTypeInfo(), true);
+          } else {
+            // Functions like NVL, COALESCE, CASE can change a 
+            // NULL introduced by a nonpart column removal into a non-null
+            // and cause overaggressive prunning, missing data (incorrect result)
+            return new ExprNodeConstantDesc(expr.getTypeInfo(), null);
+          }
+        }
+        children.set(i, other);
       }
     }
     return expr;
@@ -542,11 +566,18 @@ public class PartitionPruner extends Transform {
 
       ArrayList<Object> convertedValues = new ArrayList<Object>(values.size());
       for(int i=0; i<values.size(); i++) {
-        Object o = ObjectInspectorConverters.getConverter(
-            PrimitiveObjectInspectorFactory.javaStringObjectInspector,
-            PrimitiveObjectInspectorFactory.getPrimitiveJavaObjectInspector(partColumnTypeInfos.get(i)))
-            .convert(values.get(i));
-        convertedValues.add(o);
+        String partitionValue = values.get(i);
+        PrimitiveTypeInfo typeInfo = partColumnTypeInfos.get(i);
+
+        if (partitionValue.equals(defaultPartitionName)) {
+          convertedValues.add(null); // Null for default partition.
+        } else {
+          Object o = ObjectInspectorConverters.getConverter(
+              PrimitiveObjectInspectorFactory.javaStringObjectInspector,
+              PrimitiveObjectInspectorFactory.getPrimitiveJavaObjectInspector(typeInfo))
+              .convert(partitionValue);
+          convertedValues.add(o);
+        }
       }
 
       // Evaluate the expression tree.

@@ -22,8 +22,8 @@ import java.io.InputStream;
 import java.util.Iterator;
 import java.util.List;
 
+import org.apache.calcite.adapter.druid.DruidTable;
 import org.apache.hadoop.hive.druid.DruidStorageHandlerUtils;
-import org.apache.hadoop.hive.ql.optimizer.calcite.druid.DruidTable;
 import org.apache.hadoop.io.NullWritable;
 
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -41,6 +41,7 @@ public class DruidSelectQueryRecordReader
         extends DruidQueryRecordReader<SelectQuery, Result<SelectResultValue>> {
 
   private Result<SelectResultValue> current;
+
   private Iterator<EventHolder> values = Iterators.emptyIterator();
 
   @Override
@@ -49,9 +50,12 @@ public class DruidSelectQueryRecordReader
   }
 
   @Override
-  protected List<Result<SelectResultValue>> createResultsList(InputStream content) throws IOException {
+  protected List<Result<SelectResultValue>> createResultsList(InputStream content)
+          throws IOException {
     return DruidStorageHandlerUtils.SMILE_MAPPER.readValue(content,
-            new TypeReference<List<Result<SelectResultValue>>>(){});
+            new TypeReference<List<Result<SelectResultValue>>>() {
+            }
+    );
   }
 
   @Override
@@ -62,7 +66,7 @@ public class DruidSelectQueryRecordReader
     if (results.hasNext()) {
       current = results.next();
       values = current.getValue().getEvents().iterator();
-      return true;
+      return nextKeyValue();
     }
     return false;
   }
@@ -76,11 +80,9 @@ public class DruidSelectQueryRecordReader
   public DruidWritable getCurrentValue() throws IOException, InterruptedException {
     // Create new value
     DruidWritable value = new DruidWritable();
-    value.getValue().put(DruidTable.DEFAULT_TIMESTAMP_COLUMN, current.getTimestamp().getMillis());
-    if (values.hasNext()) {
-      value.getValue().putAll(values.next().getEvent());
-      return value;
-    }
+    EventHolder e = values.next();
+    value.getValue().put(DruidTable.DEFAULT_TIMESTAMP_COLUMN, e.getTimestamp().getMillis());
+    value.getValue().putAll(e.getEvent());
     return value;
   }
 
@@ -89,10 +91,9 @@ public class DruidSelectQueryRecordReader
     if (nextKeyValue()) {
       // Update value
       value.getValue().clear();
-      value.getValue().put(DruidTable.DEFAULT_TIMESTAMP_COLUMN, current.getTimestamp().getMillis());
-      if (values.hasNext()) {
-        value.getValue().putAll(values.next().getEvent());
-      }
+      EventHolder e = values.next();
+      value.getValue().put(DruidTable.DEFAULT_TIMESTAMP_COLUMN, e.getTimestamp().getMillis());
+      value.getValue().putAll(e.getEvent());
       return true;
     }
     return false;

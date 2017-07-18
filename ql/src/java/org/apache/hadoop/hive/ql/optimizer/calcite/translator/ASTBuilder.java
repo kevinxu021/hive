@@ -18,19 +18,19 @@
 package org.apache.hadoop.hive.ql.optimizer.calcite.translator;
 
 import java.math.BigDecimal;
-import java.text.DateFormat;
-import java.text.SimpleDateFormat;
-import java.util.Calendar;
 
+import org.apache.calcite.adapter.druid.DruidQuery;
+import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.core.JoinRelType;
-import org.apache.calcite.rel.core.TableScan;
 import org.apache.calcite.rex.RexLiteral;
 import org.apache.calcite.sql.type.SqlTypeName;
+import org.apache.calcite.util.DateString;
+import org.apache.calcite.util.TimeString;
+import org.apache.calcite.util.TimestampString;
 import org.apache.hadoop.hive.common.type.HiveIntervalDayTime;
 import org.apache.hadoop.hive.common.type.HiveIntervalYearMonth;
 import org.apache.hadoop.hive.conf.Constants;
 import org.apache.hadoop.hive.ql.optimizer.calcite.RelOptHiveTable;
-import org.apache.hadoop.hive.ql.optimizer.calcite.druid.DruidQuery;
 import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveTableScan;
 import org.apache.hadoop.hive.ql.parse.ASTNode;
 import org.apache.hadoop.hive.ql.parse.BaseSemanticAnalyzer;
@@ -38,19 +38,19 @@ import org.apache.hadoop.hive.ql.parse.HiveParser;
 import org.apache.hadoop.hive.ql.parse.ParseDriver;
 import org.apache.hadoop.hive.ql.parse.SemanticAnalyzer;
 
-class ASTBuilder {
+public class ASTBuilder {
 
-  static ASTBuilder construct(int tokenType, String text) {
+  public static ASTBuilder construct(int tokenType, String text) {
     ASTBuilder b = new ASTBuilder();
     b.curr = createAST(tokenType, text);
     return b;
   }
 
-  static ASTNode createAST(int tokenType, String text) {
+  public static ASTNode createAST(int tokenType, String text) {
     return (ASTNode) ParseDriver.adaptor.create(tokenType, text);
   }
 
-  static ASTNode destNode() {
+  public static ASTNode destNode() {
     return ASTBuilder
         .construct(HiveParser.TOK_DESTINATION, "TOK_DESTINATION")
         .add(
@@ -58,19 +58,20 @@ class ASTBuilder {
                 "TOK_TMP_FILE")).node();
   }
 
-  static ASTNode table(TableScan scan) {
-    RelOptHiveTable hTbl = (RelOptHiveTable) scan.getTable();
-    ASTBuilder b = ASTBuilder.construct(HiveParser.TOK_TABREF, "TOK_TABREF").add(
-        ASTBuilder.construct(HiveParser.TOK_TABNAME, "TOK_TABNAME")
-            .add(HiveParser.Identifier, hTbl.getHiveTableMD().getDbName())
-            .add(HiveParser.Identifier, hTbl.getHiveTableMD().getTableName()));
-
+  public static ASTNode table(RelNode scan) {
     HiveTableScan hts;
     if (scan instanceof DruidQuery) {
       hts = (HiveTableScan) ((DruidQuery)scan).getTableScan();
     } else {
       hts = (HiveTableScan) scan;
     }
+
+    RelOptHiveTable hTbl = (RelOptHiveTable) hts.getTable();
+    ASTBuilder b = ASTBuilder.construct(HiveParser.TOK_TABREF, "TOK_TABREF").add(
+        ASTBuilder.construct(HiveParser.TOK_TABNAME, "TOK_TABNAME")
+            .add(HiveParser.Identifier, hTbl.getHiveTableMD().getDbName())
+            .add(HiveParser.Identifier, hTbl.getHiveTableMD().getTableName()));
+
     ASTBuilder propList = ASTBuilder.construct(HiveParser.TOK_TABLEPROPLIST, "TOK_TABLEPROPLIST");
     if (scan instanceof DruidQuery) {
       // Pass possible query to Druid
@@ -81,7 +82,7 @@ class ASTBuilder {
                       dq.getQueryString()) + "\""));
       propList.add(ASTBuilder.construct(HiveParser.TOK_TABLEPROPERTY, "TOK_TABLEPROPERTY")
               .add(HiveParser.StringLiteral, "\"" + Constants.DRUID_QUERY_TYPE + "\"")
-              .add(HiveParser.StringLiteral, "\"" + dq.getQueryType() + "\""));
+              .add(HiveParser.StringLiteral, "\"" + dq.getQueryType().getQueryName() + "\""));
     }
     if (hts.isInsideView()) {
       // We need to carry the insideView information from calcite into the ast.
@@ -101,7 +102,7 @@ class ASTBuilder {
     return b.node();
   }
 
-  static ASTNode join(ASTNode left, ASTNode right, JoinRelType joinType, ASTNode cond,
+  public static ASTNode join(ASTNode left, ASTNode right, JoinRelType joinType, ASTNode cond,
       boolean semiJoin) {
     ASTBuilder b = null;
 
@@ -128,12 +129,12 @@ class ASTBuilder {
     return b.node();
   }
 
-  static ASTNode subQuery(ASTNode qry, String alias) {
+  public static ASTNode subQuery(ASTNode qry, String alias) {
     return ASTBuilder.construct(HiveParser.TOK_SUBQUERY, "TOK_SUBQUERY").add(qry)
         .add(HiveParser.Identifier, alias).node();
   }
 
-  static ASTNode qualifiedName(String tableName, String colName) {
+  public static ASTNode qualifiedName(String tableName, String colName) {
     ASTBuilder b = ASTBuilder
         .construct(HiveParser.DOT, ".")
         .add(
@@ -142,36 +143,36 @@ class ASTBuilder {
     return b.node();
   }
 
-  static ASTNode unqualifiedName(String colName) {
+  public static ASTNode unqualifiedName(String colName) {
     ASTBuilder b = ASTBuilder.construct(HiveParser.TOK_TABLE_OR_COL, "TOK_TABLE_OR_COL").add(
         HiveParser.Identifier, colName);
     return b.node();
   }
 
-  static ASTNode where(ASTNode cond) {
+  public static ASTNode where(ASTNode cond) {
     return ASTBuilder.construct(HiveParser.TOK_WHERE, "TOK_WHERE").add(cond).node();
   }
 
-  static ASTNode having(ASTNode cond) {
+  public static ASTNode having(ASTNode cond) {
     return ASTBuilder.construct(HiveParser.TOK_HAVING, "TOK_HAVING").add(cond).node();
   }
 
-  static ASTNode limit(Object offset, Object limit) {
+  public static ASTNode limit(Object offset, Object limit) {
     return ASTBuilder.construct(HiveParser.TOK_LIMIT, "TOK_LIMIT")
         .add(HiveParser.Number, offset.toString())
         .add(HiveParser.Number, limit.toString()).node();
   }
 
-  static ASTNode selectExpr(ASTNode expr, String alias) {
+  public static ASTNode selectExpr(ASTNode expr, String alias) {
     return ASTBuilder.construct(HiveParser.TOK_SELEXPR, "TOK_SELEXPR").add(expr)
         .add(HiveParser.Identifier, alias).node();
   }
 
-  static ASTNode literal(RexLiteral literal) {
+  public static ASTNode literal(RexLiteral literal) {
     return literal(literal, false);
   }
 
-  static ASTNode literal(RexLiteral literal, boolean useTypeQualInLiteral) {
+  public static ASTNode literal(RexLiteral literal, boolean useTypeQualInLiteral) {
     Object val = null;
     int type = 0;
     SqlTypeName sqlType = literal.getType().getSqlTypeName();
@@ -181,8 +182,19 @@ class ASTBuilder {
     case DATE:
     case TIME:
     case TIMESTAMP:
+    case INTERVAL_DAY:
+    case INTERVAL_DAY_HOUR:
+    case INTERVAL_DAY_MINUTE:
+    case INTERVAL_DAY_SECOND:
+    case INTERVAL_HOUR:
+    case INTERVAL_HOUR_MINUTE:
+    case INTERVAL_HOUR_SECOND:
+    case INTERVAL_MINUTE:
+    case INTERVAL_MINUTE_SECOND:
+    case INTERVAL_MONTH:
+    case INTERVAL_SECOND:
+    case INTERVAL_YEAR:
     case INTERVAL_YEAR_MONTH:
-    case INTERVAL_DAY_TIME:
       if (literal.getValue() == null) {
         return ASTBuilder.construct(HiveParser.TOK_NULL, "TOK_NULL").node();
       }
@@ -256,31 +268,37 @@ class ASTBuilder {
       val = literal.getValue3();
       type = ((Boolean) val).booleanValue() ? HiveParser.KW_TRUE : HiveParser.KW_FALSE;
       break;
-    case DATE: {
-      val = literal.getValue();
+    case DATE:
+      val = "'" + literal.getValueAs(DateString.class).toString() + "'";
       type = HiveParser.TOK_DATELITERAL;
-      DateFormat df = new SimpleDateFormat("yyyy-MM-dd");
-      val = df.format(((Calendar) val).getTime());
-      val = "'" + val + "'";
-    }
       break;
     case TIME:
-    case TIMESTAMP: {
-      val = literal.getValue();
+      val = "'" + literal.getValueAs(TimeString.class).toString() + "'";
       type = HiveParser.TOK_TIMESTAMPLITERAL;
-      DateFormat df = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS");
-      val = df.format(((Calendar) val).getTime());
-      val = "'" + val + "'";
-    }
       break;
+    case TIMESTAMP:
+      val = "'" + literal.getValueAs(TimestampString.class).toString() + "'";
+      type = HiveParser.TOK_TIMESTAMPLITERAL;
+      break;
+    case INTERVAL_YEAR:
+    case INTERVAL_MONTH:
     case INTERVAL_YEAR_MONTH: {
       type = HiveParser.TOK_INTERVAL_YEAR_MONTH_LITERAL;
       BigDecimal monthsBd = (BigDecimal) literal.getValue();
       HiveIntervalYearMonth intervalYearMonth = new HiveIntervalYearMonth(monthsBd.intValue());
       val = "'" + intervalYearMonth.toString() + "'";
-      break;
     }
-    case INTERVAL_DAY_TIME: {
+      break;
+    case INTERVAL_DAY:
+    case INTERVAL_DAY_HOUR:
+    case INTERVAL_DAY_MINUTE:
+    case INTERVAL_DAY_SECOND:
+    case INTERVAL_HOUR:
+    case INTERVAL_HOUR_MINUTE:
+    case INTERVAL_HOUR_SECOND:
+    case INTERVAL_MINUTE:
+    case INTERVAL_MINUTE_SECOND:
+    case INTERVAL_SECOND: {
       type = HiveParser.TOK_INTERVAL_DAY_TIME_LITERAL;
       BigDecimal millisBd = (BigDecimal) literal.getValue();
 
@@ -288,8 +306,8 @@ class ASTBuilder {
       BigDecimal secsBd = millisBd.divide(BigDecimal.valueOf(1000));
       HiveIntervalDayTime intervalDayTime = new HiveIntervalDayTime(secsBd);
       val = "'" + intervalDayTime.toString() + "'";
-      break;
     }
+      break;
     case NULL:
       type = HiveParser.TOK_NULL;
       break;
@@ -305,21 +323,21 @@ class ASTBuilder {
 
   ASTNode curr;
 
-  ASTNode node() {
+  public ASTNode node() {
     return curr;
   }
 
-  ASTBuilder add(int tokenType, String text) {
+  public ASTBuilder add(int tokenType, String text) {
     ParseDriver.adaptor.addChild(curr, createAST(tokenType, text));
     return this;
   }
 
-  ASTBuilder add(ASTBuilder b) {
+  public ASTBuilder add(ASTBuilder b) {
     ParseDriver.adaptor.addChild(curr, b.curr);
     return this;
   }
 
-  ASTBuilder add(ASTNode n) {
+  public ASTBuilder add(ASTNode n) {
     if (n != null) {
       ParseDriver.adaptor.addChild(curr, n);
     }

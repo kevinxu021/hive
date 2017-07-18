@@ -27,6 +27,7 @@ import org.apache.calcite.sql.SqlFunction;
 import org.apache.calcite.sql.SqlFunctionCategory;
 import org.apache.calcite.sql.SqlKind;
 import org.apache.calcite.sql.SqlOperator;
+import org.apache.calcite.sql.fun.SqlMonotonicBinaryOperator;
 import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import org.apache.calcite.sql.type.InferTypes;
 import org.apache.calcite.sql.type.OperandTypes;
@@ -48,7 +49,8 @@ import org.apache.hadoop.hive.ql.optimizer.calcite.functions.HiveSqlCountAggFunc
 import org.apache.hadoop.hive.ql.optimizer.calcite.functions.HiveSqlMinMaxAggFunction;
 import org.apache.hadoop.hive.ql.optimizer.calcite.functions.HiveSqlSumAggFunction;
 import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveBetween;
-import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveDateGranularity;
+import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveExtractDate;
+import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveFloorDate;
 import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveIn;
 import org.apache.hadoop.hive.ql.parse.ASTNode;
 import org.apache.hadoop.hive.ql.parse.HiveParser;
@@ -59,6 +61,8 @@ import org.apache.hadoop.hive.ql.udf.generic.GenericUDF;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFBridge;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFOPNegative;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFOPPositive;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDTF;
+import org.apache.hadoop.hive.serde.serdeConstants;
 import org.apache.hadoop.hive.serde2.typeinfo.CharTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.DecimalTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
@@ -106,6 +110,14 @@ public class SqlFunctionConverter {
       name = FunctionRegistry.getNormalizedFunctionName(funcTextName);
     }
     return getCalciteFn(name, calciteArgTypes, retType, FunctionRegistry.isDeterministic(hiveUDF));
+  }
+
+  public static SqlOperator getCalciteOperator(String funcTextName, GenericUDTF hiveUDTF,
+      ImmutableList<RelDataType> calciteArgTypes, RelDataType retType) throws SemanticException {
+    // We could just do toLowerCase here and let SA qualify it, but
+    // let's be proper...
+    String name = FunctionRegistry.getNormalizedFunctionName(funcTextName);
+    return getCalciteFn(name, calciteArgTypes, retType, false);
   }
 
   public static GenericUDF getHiveUDF(SqlOperator op, RelDataType dt, int argsLength) {
@@ -176,6 +188,10 @@ public class SqlFunctionConverter {
             FunctionRegistry.getFunctionInfo("decimal"));
       } else if (castType.equals(TypeInfoFactory.binaryTypeInfo)) {
         castUDF = FunctionRegistry.getFunctionInfo("binary");
+      } else if (castType.equals(TypeInfoFactory.intervalDayTimeTypeInfo)) {
+        castUDF = FunctionRegistry.getFunctionInfo(serdeConstants.INTERVAL_DAY_TIME_TYPE_NAME);
+      } else if (castType.equals(TypeInfoFactory.intervalYearMonthTypeInfo)) {
+        castUDF = FunctionRegistry.getFunctionInfo(serdeConstants.INTERVAL_YEAR_MONTH_TYPE_NAME);
       } else
         throw new IllegalStateException("Unexpected type : " + castType.getQualifiedName());
     }
@@ -191,7 +207,7 @@ public class SqlFunctionConverter {
       throw new RuntimeException(e);
     }
     return new FunctionInfo(
-        fi.isNative(), fi.getDisplayName(), (GenericUDF) udf, fi.getResources());
+        fi.getFunctionType(), fi.getDisplayName(), (GenericUDF) udf, fi.getResources());
   }
 
   // TODO: 1) handle Agg Func Name translation 2) is it correct to add func
@@ -207,6 +223,8 @@ public class SqlFunctionConverter {
         case IS_NOT_NULL:
         case IS_NULL:
         case CASE:
+        case EXTRACT:
+        case FLOOR:
         case OTHER_FUNCTION:
           node = (ASTNode) ParseDriver.adaptor.create(HiveParser.TOK_FUNCTION, "TOK_FUNCTION");
           node.addChild((ASTNode) ParseDriver.adaptor.create(hToken.type, hToken.text));
@@ -332,26 +350,43 @@ public class SqlFunctionConverter {
       registerFunction("in", HiveIn.INSTANCE, hToken(HiveParser.Identifier, "in"));
       registerFunction("between", HiveBetween.INSTANCE, hToken(HiveParser.Identifier, "between"));
       registerFunction("struct", SqlStdOperatorTable.ROW, hToken(HiveParser.Identifier, "struct"));
-      registerFunction("isnotnull", SqlStdOperatorTable.IS_NOT_NULL, hToken(HiveParser.TOK_ISNOTNULL, "TOK_ISNOTNULL"));
-      registerFunction("isnull", SqlStdOperatorTable.IS_NULL, hToken(HiveParser.TOK_ISNULL, "TOK_ISNULL"));
+      registerFunction("isnotnull", SqlStdOperatorTable.IS_NOT_NULL, hToken(HiveParser.Identifier, "isnotnull"));
+      registerFunction("isnull", SqlStdOperatorTable.IS_NULL, hToken(HiveParser.Identifier, "isnull"));
+      registerFunction("is not distinct from", SqlStdOperatorTable.IS_NOT_DISTINCT_FROM, hToken(HiveParser.EQUAL_NS, "<=>"));
       registerFunction("when", SqlStdOperatorTable.CASE, hToken(HiveParser.Identifier, "when"));
       registerDuplicateFunction("case", SqlStdOperatorTable.CASE, hToken(HiveParser.Identifier, "when"));
       // timebased
-      registerFunction("floor_year", HiveDateGranularity.YEAR,
+      registerFunction("year", HiveExtractDate.YEAR,
+          hToken(HiveParser.Identifier, "year"));
+      registerFunction("quarter", HiveExtractDate.QUARTER,
+          hToken(HiveParser.Identifier, "quarter"));
+      registerFunction("month", HiveExtractDate.MONTH,
+          hToken(HiveParser.Identifier, "month"));
+      registerFunction("weekofyear", HiveExtractDate.WEEK,
+          hToken(HiveParser.Identifier, "weekofyear"));
+      registerFunction("day", HiveExtractDate.DAY,
+          hToken(HiveParser.Identifier, "day"));
+      registerFunction("hour", HiveExtractDate.HOUR,
+          hToken(HiveParser.Identifier, "hour"));
+      registerFunction("minute", HiveExtractDate.MINUTE,
+          hToken(HiveParser.Identifier, "minute"));
+      registerFunction("second", HiveExtractDate.SECOND,
+          hToken(HiveParser.Identifier, "second"));
+      registerFunction("floor_year", HiveFloorDate.YEAR,
           hToken(HiveParser.Identifier, "floor_year"));
-      registerFunction("floor_quarter", HiveDateGranularity.QUARTER,
+      registerFunction("floor_quarter", HiveFloorDate.QUARTER,
           hToken(HiveParser.Identifier, "floor_quarter"));
-      registerFunction("floor_month", HiveDateGranularity.MONTH,
+      registerFunction("floor_month", HiveFloorDate.MONTH,
           hToken(HiveParser.Identifier, "floor_month"));
-      registerFunction("floor_week", HiveDateGranularity.WEEK,
+      registerFunction("floor_week", HiveFloorDate.WEEK,
           hToken(HiveParser.Identifier, "floor_week"));
-      registerFunction("floor_day", HiveDateGranularity.DAY,
+      registerFunction("floor_day", HiveFloorDate.DAY,
           hToken(HiveParser.Identifier, "floor_day"));
-      registerFunction("floor_hour", HiveDateGranularity.HOUR,
+      registerFunction("floor_hour", HiveFloorDate.HOUR,
           hToken(HiveParser.Identifier, "floor_hour"));
-      registerFunction("floor_minute", HiveDateGranularity.MINUTE,
+      registerFunction("floor_minute", HiveFloorDate.MINUTE,
           hToken(HiveParser.Identifier, "floor_minute"));
-      registerFunction("floor_second", HiveDateGranularity.SECOND,
+      registerFunction("floor_second", HiveFloorDate.SECOND,
           hToken(HiveParser.Identifier, "floor_second"));
     }
 
@@ -388,7 +423,7 @@ public class SqlFunctionConverter {
 
   // UDAF is assumed to be deterministic
   public static class CalciteUDAF extends SqlAggFunction implements CanAggregateDistinct {
-    private boolean isDistinct;
+    private final boolean isDistinct;
     public CalciteUDAF(boolean isDistinct, String opName, SqlReturnTypeInference returnTypeInference,
         SqlOperandTypeInference operandTypeInference, SqlOperandTypeChecker operandTypeChecker) {
       super(opName, SqlKind.OTHER_FUNCTION, returnTypeInference, operandTypeInference,
@@ -449,14 +484,29 @@ public class SqlFunctionConverter {
       // this.So, bail out for now.
       throw new CalciteSemanticException("<=> is not yet supported for cbo.", UnsupportedFeature.Less_than_equal_greater_than);
     }
-    SqlOperator calciteOp = hiveToCalcite.get(hiveUdfName);
-    if (calciteOp == null) {
-      CalciteUDFInfo uInf = getUDFInfo(hiveUdfName, calciteArgTypes, calciteRetType);
-      calciteOp = new CalciteSqlFn(uInf.udfName, SqlKind.OTHER_FUNCTION, uInf.returnTypeInference,
-          uInf.operandTypeInference, uInf.operandTypeChecker,
-          SqlFunctionCategory.USER_DEFINED_FUNCTION, deterministic);
+    SqlOperator calciteOp;
+    CalciteUDFInfo uInf = getUDFInfo(hiveUdfName, calciteArgTypes, calciteRetType);
+    switch (hiveUdfName) {
+      // Follow hive's rules for type inference as oppose to Calcite's
+      // for return type.
+      //TODO: Perhaps we should do this for all functions, not just +,-
+      case "-":
+        calciteOp = new SqlMonotonicBinaryOperator("-", SqlKind.MINUS, 40, true,
+            uInf.returnTypeInference, uInf.operandTypeInference, OperandTypes.MINUS_OPERATOR);
+        break;
+      case "+":
+        calciteOp = new SqlMonotonicBinaryOperator("+", SqlKind.PLUS, 40, true,
+            uInf.returnTypeInference, uInf.operandTypeInference, OperandTypes.PLUS_OPERATOR);
+        break;
+      default:
+        calciteOp = hiveToCalcite.get(hiveUdfName);
+        if (null == calciteOp) {
+          calciteOp = new CalciteSqlFn(uInf.udfName, SqlKind.OTHER_FUNCTION, uInf.returnTypeInference,
+              uInf.operandTypeInference, uInf.operandTypeChecker,
+              SqlFunctionCategory.USER_DEFINED_FUNCTION, deterministic);
+        }
+        break;
     }
-
     return calciteOp;
   }
 

@@ -58,7 +58,7 @@ import org.apache.hadoop.hive.ql.plan.MapJoinDesc;
 import org.apache.hadoop.hive.ql.plan.TableDesc;
 import org.apache.hadoop.hive.ql.plan.api.OperatorType;
 import org.apache.hadoop.hive.ql.session.SessionState;
-import org.apache.hadoop.hive.serde2.SerDe;
+import org.apache.hadoop.hive.serde2.AbstractSerDe;
 import org.apache.hadoop.hive.serde2.SerDeException;
 import org.apache.hadoop.hive.serde2.SerDeUtils;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
@@ -132,6 +132,10 @@ public class MapJoinOperator extends AbstractMapJoinOperator<MapJoinDesc> implem
     return HashTableLoaderFactory.getLoader(hconf);
   }
 
+  public String getCacheKey() {
+    return cacheKey;
+  }
+
   @Override
   protected void initializeOp(Configuration hconf) throws HiveException {
     this.hconf = hconf;
@@ -173,7 +177,7 @@ public class MapJoinOperator extends AbstractMapJoinOperator<MapJoinDesc> implem
        * requires changes in the Tez API with regard to finding bucket id and
        * also ability to schedule tasks to re-use containers that have cached the specific bucket.
        */
-      if (isLogDebugEnabled) {
+      if (LOG.isDebugEnabled()) {
         LOG.debug("This is not bucket map join, so cache");
       }
 
@@ -275,7 +279,7 @@ public class MapJoinOperator extends AbstractMapJoinOperator<MapJoinDesc> implem
 
     try {
       TableDesc keyTableDesc = conf.getKeyTblDesc();
-      SerDe keySerializer = (SerDe) ReflectionUtil.newInstance(
+      AbstractSerDe keySerializer = (AbstractSerDe) ReflectionUtil.newInstance(
           keyTableDesc.getDeserializerClass(), null);
       SerDeUtils.initializeSerDe(keySerializer, null, keyTableDesc.getProperties(), null);
       MapJoinObjectSerDeContext keyContext = new MapJoinObjectSerDeContext(keySerializer, false);
@@ -289,7 +293,7 @@ public class MapJoinOperator extends AbstractMapJoinOperator<MapJoinDesc> implem
         } else {
           valueTableDesc = conf.getValueFilteredTblDescs().get(pos);
         }
-        SerDe valueSerDe = (SerDe) ReflectionUtil.newInstance(
+        AbstractSerDe valueSerDe = (AbstractSerDe) ReflectionUtil.newInstance(
             valueTableDesc.getDeserializerClass(), null);
         SerDeUtils.initializeSerDe(valueSerDe, null, valueTableDesc.getProperties(), null);
         MapJoinObjectSerDeContext valueContext =
@@ -314,7 +318,7 @@ public class MapJoinOperator extends AbstractMapJoinOperator<MapJoinDesc> implem
     try {
       loader.load(mapJoinTables, mapJoinTableSerdes);
     } catch (HiveException e) {
-      if (isLogInfoEnabled) {
+      if (LOG.isInfoEnabled()) {
         LOG.info("Exception loading hash tables. Clearing partially loaded hash table containers.");
       }
 
@@ -554,7 +558,7 @@ public class MapJoinOperator extends AbstractMapJoinOperator<MapJoinDesc> implem
         }
       }
 
-      if (isLogInfoEnabled) {
+      if (LOG.isInfoEnabled()) {
         LOG.info("spilled: " + spilled + " abort: " + abort + ". Clearing spilled partitions.");
       }
 
@@ -568,7 +572,7 @@ public class MapJoinOperator extends AbstractMapJoinOperator<MapJoinDesc> implem
         && (this.getExecContext().getLocalWork().getInputFileChangeSensitive())
         && !(HiveConf.getVar(hconf, ConfVars.HIVE_EXECUTION_ENGINE).equals("spark")
             && SparkUtilities.isDedicatedCluster(hconf))) {
-      if (isLogInfoEnabled) {
+      if (LOG.isInfoEnabled()) {
         LOG.info("MR: Clearing all map join table containers.");
       }
       clearAllTableContainers();

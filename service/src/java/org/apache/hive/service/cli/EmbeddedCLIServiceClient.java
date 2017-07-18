@@ -21,6 +21,7 @@ package org.apache.hive.service.cli;
 import java.util.List;
 import java.util.Map;
 
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hive.service.auth.HiveAuthFactory;
 
 
@@ -31,7 +32,9 @@ import org.apache.hive.service.auth.HiveAuthFactory;
 public class EmbeddedCLIServiceClient extends CLIServiceClient {
   private final ICLIService cliService;
 
-  public EmbeddedCLIServiceClient(ICLIService cliService) {
+  // TODO: this doesn't appear to be used anywhere.
+  public EmbeddedCLIServiceClient(ICLIService cliService, Configuration conf) {
+    super(conf);
     this.cliService = cliService;
   }
 
@@ -156,8 +159,8 @@ public class EmbeddedCLIServiceClient extends CLIServiceClient {
    * @see org.apache.hive.service.cli.CLIServiceClient#getOperationStatus(org.apache.hive.service.cli.OperationHandle)
    */
   @Override
-  public OperationStatus getOperationStatus(OperationHandle opHandle) throws HiveSQLException {
-    return cliService.getOperationStatus(opHandle);
+  public OperationStatus getOperationStatus(OperationHandle opHandle, boolean getProgressUpdate) throws HiveSQLException {
+    return cliService.getOperationStatus(opHandle, getProgressUpdate);
   }
 
   /* (non-Javadoc)

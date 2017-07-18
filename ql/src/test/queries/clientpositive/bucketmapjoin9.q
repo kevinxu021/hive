@@ -1,3 +1,5 @@
+set hive.strict.checks.bucketing=false;
+
 set hive.input.format=org.apache.hadoop.hive.ql.io.HiveInputFormat;
 
 CREATE TABLE srcbucket_mapjoin_part_1 (key INT, value STRING) PARTITIONED BY (part STRING) 
@@ -15,6 +17,7 @@ ALTER TABLE srcbucket_mapjoin_part_2 CLUSTERED BY (key) INTO 2 BUCKETS;
 
 set hive.optimize.bucketmapjoin=true;
 
+set hive.cbo.enable=false;
 -- The table bucketing metadata matches but the partitions have different numbers of buckets, bucket map join should not be used
 
 EXPLAIN EXTENDED

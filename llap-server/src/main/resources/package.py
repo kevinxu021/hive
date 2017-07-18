@@ -3,6 +3,7 @@
 import sys,os,stat
 import argparse
 from json import loads as json_parse
+from json import dumps as json_print
 from os.path import exists, join, relpath
 from time import gmtime, strftime
 import shutil
@@ -19,17 +20,16 @@ class LlapResource(object):
 		# convert to Mb
 		self.cache = config["hive.llap.io.memory.size"] / (1024*1024.0)
 		self.direct = config["hive.llap.io.allocator.direct"]
-		self.min_mb = -1
+		self.executors = config["hive.llap.daemon.num.executors"]
 		self.min_cores = -1
 		# compute heap + cache as final Xmx
 		h = self.memory 
 		if (not self.direct):
 			h += self.cache
 		if size == -1:
-			c = min(h*1.2, h + 1024) # + 1024 or 20%
-			c += (self.direct and self.cache) or 0
-			if self.min_mb > 0:
-				c = c + c%self.min_mb
+			print "Cannot determine the container size"
+			sys.exit(1)
+			return
 		else:
 			# do not mess with user input
 			c = size
@@ -57,6 +57,19 @@ def zipdir(path, zip, prefix="."):
 			src = join(root, file)
 			dst = src.replace(path, prefix)
 			zip.write(src, dst)
+
+def slider_appconfig_global_property(arg):
+	kv = arg.split("=")
+	if len(kv) != 2:
+		raise argparse.ArgumentTypeError("Value must be split into two parts separated by =")
+	return tuple(kv)
+
+def construct_slider_site_global_string(kvs):
+	if not kvs:
+		return ""
+	kvs = map(lambda a : a[0], kvs)
+	return ",\n" + ",\n".join(["    %s:%s" % (json_print(k), json_print(v)) for (k,v) in kvs])
+
 	
 def main(args):
 	version = os.getenv("HIVE_VERSION")
@@ -71,17 +84,31 @@ def main(args):
 	parser.add_argument("--args", default="")
 	parser.add_argument("--name", default="llap0")
 	parser.add_argument("--loglevel", default="INFO")
-	parser.add_argument("--logger", default="RFA")
+	parser.add_argument("--logger", default="query-routing")
 	parser.add_argument("--chaosmonkey", type=int, default=0)
 	parser.add_argument("--slider-am-container-mb", type=int, default=1024)
+	parser.add_argument("--slider-appconfig-global", nargs='*', type=slider_appconfig_global_property, action='append')
 	parser.add_argument("--slider-keytab-dir", default="")
 	parser.add_argument("--slider-keytab", default="")
 	parser.add_argument("--slider-principal", default="")
 	parser.add_argument("--slider-default-keytab", dest='slider_default_keytab', action='store_true')
+	parser.add_argument("--slider-placement", type=int, default=4)
 	parser.set_defaults(slider_default_keytab=False)
+	parser.add_argument("--startImmediately", dest='start_immediately', action='store_true')
+	parser.add_argument("--javaChild", dest='java_child', action='store_true')
+	parser.set_defaults(start_immediately=False)
+	parser.set_defaults(java_child=False)
 	# Unneeded here for now: parser.add_argument("--hiveconf", action='append')
 	#parser.add_argument("--size") parser.add_argument("--xmx") parser.add_argument("--cache") parser.add_argument("--executors")
 	(args, unknown_args) = parser.parse_known_args(args)
+	if args.start_immediately and not args.java_child:
+		sys.exit(0)
+		return
+	if args.java_child:
+		print "%s Running as a child of LlapServiceDriver" % (strftime("%H:%M:%S", gmtime()))
+	else:
+		print "%s Running after LlapServiceDriver" % (strftime("%H:%M:%S", gmtime()))
+
 	input = args.input
 	output = args.output
 	slider_am_jvm_heapsize = max(args.slider_am_container_mb * 0.8, args.slider_am_container_mb - 1024)
@@ -103,10 +130,13 @@ def main(args):
 	config = json_parse(open(join(input, "config.json")).read())
 	java_home = config["java.home"]
 	max_direct_memory = config["max_direct_memory"]
+
+	resource = LlapResource(config)
+
 	daemon_args = args.args
 	if long(max_direct_memory) > 0:
 		daemon_args = " -XX:MaxDirectMemorySize=%s %s" % (max_direct_memory, daemon_args)
-	resource = LlapResource(config)
+	daemon_args = " -Dhttp.maxConnections=%s %s" % ((max(args.instances, resource.executors) + 1), daemon_args)
 	# 5% container failure every monkey_interval seconds
 	monkey_percentage = 5 # 5%
 	vars = {
@@ -127,10 +157,12 @@ def main(args):
 		"monkey_percentage" : monkey_percentage,
 		"monkey_enabled" : args.chaosmonkey > 0,
 		"slider.am.container.mb" : args.slider_am_container_mb,
+		"slider_appconfig_global_append": construct_slider_site_global_string(args.slider_appconfig_global),
 		"slider_am_jvm_heapsize" : slider_am_jvm_heapsize,
 		"slider_keytab_dir" : slider_keytab_dir,
 		"slider_keytab" : slider_keytab,
-		"slider_principal" : slider_principal
+		"slider_principal" : slider_principal,
+		"placement" : args.slider_placement
 	}
 	
 	if not exists(output):
@@ -141,7 +173,6 @@ def main(args):
 	if exists(dst):
 		shutil.rmtree(dst)
 	shutil.copytree(src, dst)
-
 
 	# Make the zip package
 	tmp = join(output, "tmp")
@@ -157,6 +188,8 @@ def main(args):
 		f.write(metainfo % vars)
 
 	os.mkdir(join(pkg, "files"))
+	print "%s Prepared the files" % (strftime("%H:%M:%S", gmtime()))
+
 	tarball = tarfile.open(join(pkg, "files", "llap-%s.tar.gz" %  version), "w:gz")
 	# recursive add + -C chdir inside
 	tarball.add(input, "")
@@ -165,6 +198,7 @@ def main(args):
 	zipped = zipfile.ZipFile(join(output, "llap-%s.zip" % version), "w")
 	zipdir(tmp, zipped)
 	zipped.close()
+	print "%s Packaged the files" % (strftime("%H:%M:%S", gmtime()))
 
 	# cleanup after making zip pkg
 	shutil.rmtree(tmp)
@@ -179,7 +213,8 @@ def main(args):
 		f.write(runner % vars)
 	os.chmod(join(output, "run.sh"), 0700)
 
-	print "Prepared %s/run.sh for running LLAP on Slider" % (output)
+	if not args.java_child:
+		print "%s Prepared %s/run.sh for running LLAP on Slider" % (strftime("%H:%M:%S", gmtime()), output)
 
 if __name__ == "__main__":
 	main(sys.argv[1:])

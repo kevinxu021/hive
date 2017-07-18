@@ -17,39 +17,40 @@
  */
 package org.apache.hadoop.hive.druid.serde;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.util.Iterator;
-import java.util.List;
-
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hive.druid.DruidStorageHandlerUtils;
-import org.apache.hadoop.hive.druid.HiveDruidSplit;
-import org.apache.hadoop.io.NullWritable;
-import org.apache.hadoop.mapreduce.InputSplit;
-import org.apache.hadoop.mapreduce.RecordReader;
-import org.apache.hadoop.mapreduce.TaskAttemptContext;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import com.google.common.collect.Iterators;
 import com.metamx.common.lifecycle.Lifecycle;
 import com.metamx.http.client.HttpClient;
 import com.metamx.http.client.HttpClientConfig;
 import com.metamx.http.client.HttpClientInit;
-
 import io.druid.query.BaseQuery;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.druid.DruidStorageHandler;
+import org.apache.hadoop.hive.druid.DruidStorageHandlerUtils;
+import org.apache.hadoop.hive.druid.io.HiveDruidSplit;
+import org.apache.hadoop.io.NullWritable;
+import org.apache.hadoop.mapreduce.InputSplit;
+import org.apache.hadoop.mapreduce.RecordReader;
+import org.apache.hadoop.mapreduce.TaskAttemptContext;
+import org.joda.time.Period;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.Iterator;
+import java.util.List;
 
 /**
  * Base record reader for given a Druid query. This class contains the logic to
  * send the query to the broker and retrieve the results. The transformation to
  * emit records needs to be done by the classes that extend the reader.
- * 
+ *
  * The key for each record will be a NullWritable, while the value will be a
  * DruidWritable containing the timestamp as well as all values resulting from
  * the query.
  */
-public abstract class DruidQueryRecordReader<T extends BaseQuery<R>,R extends Comparable<R>>
+public abstract class DruidQueryRecordReader<T extends BaseQuery<R>, R extends Comparable<R>>
         extends RecordReader<NullWritable, DruidWritable>
         implements org.apache.hadoop.mapred.RecordReader<NullWritable, DruidWritable> {
 
@@ -81,9 +82,13 @@ public abstract class DruidQueryRecordReader<T extends BaseQuery<R>,R extends Co
       LOG.info("Retrieving from druid using query:\n " + query);
     }
 
-    HttpClient client = HttpClientInit.createClient(HttpClientConfig.builder().build(), new Lifecycle());
-    InputStream response = DruidStorageHandlerUtils.submitRequest(client,
-            DruidStorageHandlerUtils.createRequest(hiveDruidSplit.getAddress(), query));
+    InputStream response;
+    try {
+      response = DruidStorageHandlerUtils.submitRequest(DruidStorageHandler.getHttpClient(),
+              DruidStorageHandlerUtils.createRequest(hiveDruidSplit.getLocations()[0], query));
+    } catch (Exception e) {
+      throw new IOException(org.apache.hadoop.util.StringUtils.stringifyException(e));
+    }
 
     // Retrieve results
     List<R> resultsList;

@@ -24,6 +24,7 @@ import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -377,7 +378,6 @@ public class HiveQueryResultSet extends HiveBaseResultSet {
         fetchedRowsItr = fetchedRows.iterator();
       }
 
-      String rowStr = "";
       if (fetchedRowsItr.hasNext()) {
         row = fetchedRowsItr.next();
       } else {
@@ -385,17 +385,13 @@ public class HiveQueryResultSet extends HiveBaseResultSet {
       }
 
       rowsFetched++;
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("Fetched row string: " + rowStr);
-      }
-
     } catch (SQLException eS) {
       throw eS;
     } catch (Exception ex) {
       ex.printStackTrace();
       throw new SQLException("Error retrieving next row", ex);
     }
-    // NOTE: fetchOne dosn't throw new SQLException("Method not supported").
+    // NOTE: fetchOne doesn't throw new SQLFeatureNotSupportedException("Method not supported").
     return true;
   }
 
@@ -437,12 +433,12 @@ public class HiveQueryResultSet extends HiveBaseResultSet {
 
   public <T> T getObject(String columnLabel, Class<T> type)  throws SQLException {
     //JDK 1.7
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public <T> T getObject(int columnIndex, Class<T> type)  throws SQLException {
     //JDK 1.7
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   /**

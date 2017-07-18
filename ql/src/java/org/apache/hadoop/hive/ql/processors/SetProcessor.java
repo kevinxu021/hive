@@ -38,6 +38,7 @@ import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.metastore.api.Schema;
 import org.apache.hadoop.hive.ql.metadata.Hive;
 import org.apache.hadoop.hive.ql.session.SessionState;
+import org.apache.orc.OrcConf;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -52,7 +53,21 @@ public class SetProcessor implements CommandProcessor {
   private static final Logger LOG = LoggerFactory.getLogger(SetProcessor.class);
 
   private static final String prefix = "set: ";
-  private static final Set<String> removedConfigs = Sets.newHashSet("hive.mapred.supports.subdirectories","hive.enforce.sorting","hive.enforce.bucketing", "hive.outerjoin.supports.filters");
+  private static final Set<String> removedConfigs =
+      Sets.newHashSet("hive.mapred.supports.subdirectories",
+          "hive.enforce.sorting","hive.enforce.bucketing",
+          "hive.outerjoin.supports.filters");
+  // Allow the user to set the ORC properties without getting an error.
+  static {
+    for(OrcConf var: OrcConf.values()) {
+      String name = var.getHiveConfName();
+      if (name != null && name.startsWith("hive.")) {
+        removedConfigs.add(name);
+      }
+    }
+  }
+
+  private static final String[] PASSWORD_STRINGS = new String[] {"password", "paswd", "pswd"};
 
   public static boolean getBoolean(String value) {
     if (value.equals("on") || value.equals("true")) {
@@ -88,14 +103,33 @@ public class SetProcessor implements CommandProcessor {
     }
 
     for (Map.Entry<String, String> entry : mapToSortedMap(System.getenv()).entrySet()) {
+      if(isHidden(entry.getKey())) {
+        continue;
+      }
       ss.out.println(ENV_PREFIX+entry.getKey() + "=" + entry.getValue());
     }
 
     for (Map.Entry<String, String> entry :
       propertiesToSortedMap(System.getProperties()).entrySet() ) {
+      if(isHidden(entry.getKey())) {
+        continue;
+      }
       ss.out.println(SYSTEM_PREFIX+entry.getKey() + "=" + entry.getValue());
     }
 
+  }
+
+  /*
+   * Checks if the value contains any of the PASSWORD_STRINGS and if yes
+   * return true
+   */
+  private boolean isHidden(String key) {
+    for(String p : PASSWORD_STRINGS) {
+      if(key.toLowerCase().contains(p)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private void dumpOption(String s) {
@@ -175,17 +209,22 @@ public class SetProcessor implements CommandProcessor {
       : new CommandProcessorResponse(0, Lists.newArrayList(nonErrorMessage));
   }
 
+  static String setConf(String varname, String key, String varvalue, boolean register)
+        throws IllegalArgumentException {
+    return setConf(SessionState.get(), varname, key, varvalue, register);
+  }
+
   /**
    * @return A console message that is not strong enough to fail the command (e.g. deprecation).
    */
-  static String setConf(String varname, String key, String varvalue, boolean register)
+  static String setConf(SessionState ss, String varname, String key, String varvalue, boolean register)
         throws IllegalArgumentException {
     String result = null;
-    HiveConf conf = SessionState.get().getConf();
+    HiveConf conf = ss.getConf();
     String value = new VariableSubstitution(new HiveVariableSource() {
       @Override
       public Map<String, String> getHiveVariable() {
-        return SessionState.get().getHiveVariables();
+        return ss.getHiveVariables();
       }
     }).substitute(conf, varvalue);
     if (conf.getBoolVar(HiveConf.ConfVars.HIVECONFVALIDATION)) {
@@ -212,7 +251,7 @@ public class SetProcessor implements CommandProcessor {
     conf.verifyAndSet(key, value);
     if (HiveConf.ConfVars.HIVE_EXECUTION_ENGINE.varname.equals(key)) {
       if (!"spark".equals(value)) {
-        SessionState.get().closeSparkSession();
+        ss.closeSparkSession();
       }
       if ("mr".equals(value)) {
         result = HiveConf.generateMrDeprecationWarning();
@@ -220,7 +259,7 @@ public class SetProcessor implements CommandProcessor {
       }
     }
     if (register) {
-      SessionState.get().getOverriddenConfigurations().put(key, value);
+      ss.getOverriddenConfigurations().put(key, value);
     }
     return result;
   }
@@ -249,7 +288,11 @@ public class SetProcessor implements CommandProcessor {
       String propName = varname.substring(SYSTEM_PREFIX.length());
       String result = System.getProperty(propName);
       if (result != null) {
-        ss.out.println(SYSTEM_PREFIX + propName + "=" + result);
+        if(isHidden(propName)) {
+          ss.out.println(SYSTEM_PREFIX + propName + " is a hidden config");
+        } else {
+          ss.out.println(SYSTEM_PREFIX + propName + "=" + result);
+        }
         return createProcessorSuccessResponse();
       } else {
         ss.out.println(propName + " is undefined as a system property");
@@ -258,7 +301,11 @@ public class SetProcessor implements CommandProcessor {
     } else if (varname.indexOf(ENV_PREFIX) == 0) {
       String var = varname.substring(ENV_PREFIX.length());
       if (System.getenv(var) != null) {
-        ss.out.println(ENV_PREFIX + var + "=" + System.getenv(var));
+        if(isHidden(var)) {
+          ss.out.println(ENV_PREFIX + var + " is a hidden config");
+        } else {
+          ss.out.println(ENV_PREFIX + var + "=" + System.getenv(var));
+        }
         return createProcessorSuccessResponse();
       } else {
         ss.out.println(varname + " is undefined as an environmental variable");

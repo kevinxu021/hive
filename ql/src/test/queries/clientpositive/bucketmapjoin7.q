@@ -1,3 +1,6 @@
+set hive.strict.checks.bucketing=false;
+set hive.cbo.enable=false;
+
 set hive.input.format=org.apache.hadoop.hive.ql.io.HiveInputFormat;
 
 CREATE TABLE srcbucket_mapjoin_part_1 (key INT, value STRING) PARTITIONED BY (ds STRING, hr STRING) 

@@ -47,7 +47,7 @@ import org.apache.hadoop.hive.ql.io.HiveKey;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.metadata.HiveUtils;
 import org.apache.hadoop.hive.serde2.ByteStream.Output;
-import org.apache.hadoop.hive.serde2.SerDe;
+import org.apache.hadoop.hive.serde2.AbstractSerDe;
 import org.apache.hadoop.hive.serde2.SerDeException;
 import org.apache.hadoop.hive.serde2.WriteBuffers;
 import org.apache.hadoop.hive.serde2.binarysortable.BinarySortableSerDe;
@@ -117,6 +117,11 @@ public class HybridHashTableContainer
   private final List<Object> EMPTY_LIST = new ArrayList<Object>(0);
 
   private final String spillLocalDirs;
+
+  @Override
+  public long getEstimatedMemorySize() {
+    return memoryUsed;
+  }
 
   /**
    * This class encapsulates the triplet together since they are closely related to each other
@@ -1166,7 +1171,7 @@ public class HybridHashTableContainer
   @Override
   public void setSerde(MapJoinObjectSerDeContext keyCtx, MapJoinObjectSerDeContext valCtx)
       throws SerDeException {
-    SerDe keySerde = keyCtx.getSerDe(), valSerde = valCtx.getSerDe();
+    AbstractSerDe keySerde = keyCtx.getSerDe(), valSerde = valCtx.getSerDe();
 
     if (writeHelper == null) {
       LOG.info("Initializing container with " + keySerde.getClass().getName() + " and "

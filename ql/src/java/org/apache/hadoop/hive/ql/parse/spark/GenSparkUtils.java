@@ -38,6 +38,7 @@ import org.apache.hadoop.hive.ql.exec.GroupByOperator;
 import org.apache.hadoop.hive.ql.exec.HashTableDummyOperator;
 import org.apache.hadoop.hive.ql.exec.JoinOperator;
 import org.apache.hadoop.hive.ql.exec.Operator;
+import org.apache.hadoop.hive.ql.exec.OperatorUtils;
 import org.apache.hadoop.hive.ql.exec.ReduceSinkOperator;
 import org.apache.hadoop.hive.ql.exec.SMBMapJoinOperator;
 import org.apache.hadoop.hive.ql.exec.SerializationUtilities;
@@ -101,22 +102,22 @@ public class GenSparkUtils {
     reduceWork.setReducer(root);
     reduceWork.setNeedsTagging(GenMapRedUtils.needsTagging(reduceWork));
 
-    // All parents should be reduce sinks. We pick the one we just walked
-    // to choose the number of reducers. In the join/union case they will
-    // all be -1. In sort/order case where it matters there will be only
-    // one parent.
-    Preconditions.checkArgument(context.parentOfRoot instanceof ReduceSinkOperator,
-      "AssertionError: expected context.parentOfRoot to be an instance of ReduceSinkOperator, but was "
-      + context.parentOfRoot.getClass().getName());
+    // Pick the maximum # reducers across all parents as the # of reduce tasks.
+    int maxExecutors = -1;
+    for (Operator<? extends OperatorDesc> parentOfRoot : root.getParentOperators()) {
+      Preconditions.checkArgument(parentOfRoot instanceof ReduceSinkOperator,
+          "AssertionError: expected parentOfRoot to be an "
+              + "instance of ReduceSinkOperator, but was "
+              + parentOfRoot.getClass().getName());
+      ReduceSinkOperator reduceSink = (ReduceSinkOperator) parentOfRoot;
+      maxExecutors = Math.max(maxExecutors, reduceSink.getConf().getNumReducers());
+    }
+    reduceWork.setNumReduceTasks(maxExecutors);
+
     ReduceSinkOperator reduceSink = (ReduceSinkOperator) context.parentOfRoot;
-
-    reduceWork.setNumReduceTasks(reduceSink.getConf().getNumReducers());
-
     setupReduceSink(context, reduceWork, reduceSink);
-
     sparkWork.add(reduceWork);
-
-    SparkEdgeProperty edgeProp = getEdgeProperty(reduceSink, reduceWork);
+    SparkEdgeProperty edgeProp = getEdgeProperty(context.conf, reduceSink, reduceWork);
 
     sparkWork.connect(context.preceedingWork, reduceWork, edgeProp);
 
@@ -156,10 +157,20 @@ public class GenSparkUtils {
     Preconditions.checkArgument(root instanceof TableScanOperator,
       "AssertionError: expected root to be an instance of TableScanOperator, but was "
       + root.getClass().getName());
-    String alias = ((TableScanOperator) root).getConf().getAlias();
-
+    String alias_id = null;
+    if (context.parseContext != null && context.parseContext.getTopOps() != null) {
+      for (String currentAliasID : context.parseContext.getTopOps().keySet()) {
+        Operator<? extends OperatorDesc> currOp = context.parseContext.getTopOps().get(currentAliasID);
+        if (currOp == root) {
+          alias_id = currentAliasID;
+          break;
+        }
+      }
+    }
+    if (alias_id == null)
+      alias_id = ((TableScanOperator) root).getConf().getAlias();
     if (!deferSetup) {
-      setupMapWork(mapWork, context, partitions,(TableScanOperator) root, alias);
+      setupMapWork(mapWork, context, partitions,(TableScanOperator) root, alias_id);
     }
 
     // add new item to the Spark work
@@ -171,10 +182,10 @@ public class GenSparkUtils {
   // this method's main use is to help unit testing this class
   protected void setupMapWork(MapWork mapWork, GenSparkProcContext context,
       PrunedPartitionList partitions, TableScanOperator root,
-      String alias) throws SemanticException {
+      String alias_id) throws SemanticException {
     // All the setup is done in GenMapRedUtils
     GenMapRedUtils.setMapWork(mapWork, context.parseContext,
-        context.inputs, partitions, root, alias, context.conf, false);
+        context.inputs, partitions, root, alias_id, context.conf, false);
   }
 
   private void collectOperators(Operator<?> op, List<Operator<?>> opList) {
@@ -414,8 +425,9 @@ public class GenSparkUtils {
     keys.add(desc.getPartKey());
   }
 
-  public static SparkEdgeProperty getEdgeProperty(ReduceSinkOperator reduceSink,
+  public static SparkEdgeProperty getEdgeProperty(HiveConf conf, ReduceSinkOperator reduceSink,
       ReduceWork reduceWork) throws SemanticException {
+    boolean useSparkGroupBy = conf.getBoolVar(HiveConf.ConfVars.SPARK_USE_GROUPBY_SHUFFLE);
     SparkEdgeProperty edgeProperty = new SparkEdgeProperty(SparkEdgeProperty.SHUFFLE_NONE);
     edgeProperty.setNumPartitions(reduceWork.getNumReduceTasks());
     String sortOrder = Strings.nullToEmpty(reduceSink.getConf().getOrder()).trim();
@@ -424,7 +436,10 @@ public class GenSparkUtils {
       edgeProperty.setShuffleGroup();
       // test if the group by needs partition level sort, if so, use the MR style shuffle
       // SHUFFLE_SORT shouldn't be used for this purpose, see HIVE-8542
-      if (!sortOrder.isEmpty() && groupByNeedParLevelOrder(reduceSink)) {
+      if (!useSparkGroupBy || (!sortOrder.isEmpty() && groupByNeedParLevelOrder(reduceSink))) {
+        if (!useSparkGroupBy) {
+          LOG.info("hive.spark.use.groupby.shuffle is off. Use repartition shuffle instead.");
+        }
         edgeProperty.setMRShuffle();
       }
     }
@@ -457,11 +472,16 @@ public class GenSparkUtils {
       }
     }
 
-    // set to groupby-shuffle if it's still NONE
     // simple distribute-by goes here
     if (edgeProperty.isShuffleNone()) {
-      edgeProperty.setShuffleGroup();
+      if (!useSparkGroupBy) {
+        LOG.info("hive.spark.use.groupby.shuffle is off. Use repartition shuffle instead.");
+        edgeProperty.setMRShuffle();
+      } else {
+        edgeProperty.setShuffleGroup();
+      }
     }
+
 
     return edgeProperty;
   }
@@ -573,7 +593,7 @@ public class GenSparkUtils {
    */
   public BaseWork getEnclosingWork(Operator<?> op, GenSparkProcContext procCtx) {
     List<Operator<?>> ops = new ArrayList<Operator<?>>();
-    findRoots(op, ops);
+    OperatorUtils.findRoots(op, ops);
     for (Operator<?> r : ops) {
       BaseWork work = procCtx.rootToWorkMap.get(r);
       if (work != null) {
@@ -581,19 +601,5 @@ public class GenSparkUtils {
       }
     }
     return null;
-  }
-
-  /*
-   * findRoots returns all root operators (in ops) that result in operator op
-   */
-  private void findRoots(Operator<?> op, List<Operator<?>> ops) {
-    List<Operator<?>> parents = op.getParentOperators();
-    if (parents == null || parents.isEmpty()) {
-      ops.add(op);
-      return;
-    }
-    for (Operator<?> p : parents) {
-      findRoots(p, ops);
-    }
   }
 }

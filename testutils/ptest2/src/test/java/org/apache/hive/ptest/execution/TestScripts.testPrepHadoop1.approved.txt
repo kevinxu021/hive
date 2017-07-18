@@ -22,7 +22,7 @@ then
   export PATH=$JAVA_HOME/bin/:$PATH
 fi
 export ANT_OPTS="-Xmx1g -XX:MaxPermSize=256m -Dhttp.proxyHost=somehost -Dhttp.proxyPort=3128"
-export M2_OPTS="-Xmx1g -XX:MaxPermSize=256m ${mavenEnvOpts}"
+export MAVEN_OPTS="-Xmx1g ${mavenEnvOpts}"
 cd /some/working/dir/
 (
   if [[ "true" == "true" ]]
@@ -99,11 +99,11 @@ cd /some/working/dir/
         cd ..
         fi
       done
-        mvn -B clean install -DskipTests -Dmaven.repo.local=/some/working/dir/maven $mavenArgs $mavenBuildArgs
+        mvn -B clean install -DskipTests -T 4 -q -Dmaven.repo.local=/some/working/dir/maven $mavenArgs $mavenBuildArgs
     if [[ -d "itests" ]]
     then
       cd itests
-      mvn -B clean install -DskipTests -Dmaven.repo.local=/some/working/dir/maven $mavenArgs $mavenBuildArgs
+      mvn -B clean install -DskipTests -T 4 -q -Dmaven.repo.local=/some/working/dir/maven $mavenArgs $mavenBuildArgs
     fi
   elif [[ "maven" == "ant" ]]
   then

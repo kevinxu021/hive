@@ -23,6 +23,7 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.anyBoolean;
 import static org.mockito.Matchers.eq;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -36,6 +37,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
@@ -44,6 +46,7 @@ import org.apache.hadoop.hive.common.metrics.common.Metrics;
 import org.apache.hadoop.hive.common.metrics.common.MetricsConstant;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.Context;
+import org.apache.hadoop.hive.ql.QueryPlan;
 import org.apache.hadoop.hive.ql.exec.Operator;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.BaseWork;
@@ -161,6 +164,9 @@ public class TestTezTask {
     task = new TezTask(utils);
     task.setWork(work);
     task.setConsole(mock(LogHelper.class));
+    QueryPlan mockQueryPlan = mock(QueryPlan.class);
+    doReturn(UUID.randomUUID().toString()).when(mockQueryPlan).getQueryId();
+    task.setQueryPlan(mockQueryPlan);
 
     conf = new JobConf();
     appLr = mock(LocalResource.class);
@@ -227,7 +233,7 @@ public class TestTezTask {
 
   @Test
   public void testClose() throws HiveException {
-    task.close(work, 0);
+    task.close(work, 0, null);
     verify(op, times(4)).jobClose(any(Configuration.class), eq(true));
   }
 
@@ -239,7 +245,7 @@ public class TestTezTask {
     final Map<String,LocalResource> resMap = new HashMap<String,LocalResource>();
     resMap.put("foo.jar", res);
 
-    when(utils.localizeTempFiles(path.toString(), conf, inputOutputJars))
+    when(utils.localizeTempFiles(path.toString(), conf, inputOutputJars, null))
         .thenReturn(resources);
     when(utils.getBaseName(res)).thenReturn("foo.jar");
     when(sessionState.isOpen()).thenReturn(true);
@@ -258,7 +264,7 @@ public class TestTezTask {
     resMap.put("foo.jar", res);
     DAG dag = mock(DAG.class);
 
-    when(utils.localizeTempFiles(path.toString(), conf, inputOutputJars))
+    when(utils.localizeTempFiles(path.toString(), conf, inputOutputJars, null))
         .thenReturn(resources);
     when(utils.getBaseName(res)).thenReturn("foo.jar");
     when(sessionState.isOpen()).thenReturn(true);
@@ -276,11 +282,11 @@ public class TestTezTask {
     final Map<String,LocalResource> resMap = new HashMap<String,LocalResource>();
     resMap.put("foo.jar", res);
 
-    when(utils.localizeTempFiles(path.toString(), conf, inputOutputJars))
-        .thenReturn(resources);
+    when(utils.localizeTempFiles(eq(path.toString()), eq(conf), eq(inputOutputJars),
+        Mockito.<String[]>any())).thenReturn(resources);
     when(utils.getBaseName(res)).thenReturn("foo.jar");
 
-    assertEquals(resMap, task.getExtraLocalResources(conf, path, inputOutputJars));
+    assertEquals(resMap, task.getExtraLocalResources(conf, path, inputOutputJars, null));
   }
 
   @Test

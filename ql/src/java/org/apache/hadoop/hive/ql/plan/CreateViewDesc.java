@@ -24,6 +24,7 @@ import java.util.Map;
 
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.ql.exec.Utilities;
+import org.apache.hadoop.hive.ql.parse.ReplicationSpec;
 import org.apache.hadoop.hive.ql.plan.Explain.Level;
 
 
@@ -38,6 +39,7 @@ public class CreateViewDesc extends DDLDesc implements Serializable {
   private String viewName;
   private String originalText;
   private String expandedText;
+  private boolean rewriteEnabled;
   private List<FieldSchema> schema;
   private Map<String, String> tblProps;
   private List<String> partColNames;
@@ -53,6 +55,7 @@ public class CreateViewDesc extends DDLDesc implements Serializable {
   private String serde; // only used for materialized views
   private String storageHandler; // only used for materialized views
   private Map<String, String> serdeProps; // only used for materialized views
+  private ReplicationSpec replicationSpec = null;
 
   /**
    * For serialization only.
@@ -79,7 +82,7 @@ public class CreateViewDesc extends DDLDesc implements Serializable {
    */
   public CreateViewDesc(String viewName, List<FieldSchema> schema, String comment,
           Map<String, String> tblProps, List<String> partColNames,
-          boolean ifNotExists, boolean orReplace, boolean isAlterViewAs,
+          boolean ifNotExists, boolean orReplace, boolean rewriteEnabled, boolean isAlterViewAs,
           String inputFormat, String outputFormat, String location,
           String serde, String storageHandler, Map<String, String> serdeProps) {
     this.viewName = viewName;
@@ -89,8 +92,9 @@ public class CreateViewDesc extends DDLDesc implements Serializable {
     this.comment = comment;
     this.ifNotExists = ifNotExists;
     this.orReplace = orReplace;
-    this.isAlterViewAs = isAlterViewAs;
     this.isMaterialized = true;
+    this.rewriteEnabled = rewriteEnabled;
+    this.isAlterViewAs = isAlterViewAs;
     this.inputFormat = inputFormat;
     this.outputFormat = outputFormat;
     this.location = location;
@@ -126,6 +130,7 @@ public class CreateViewDesc extends DDLDesc implements Serializable {
     this.orReplace = orReplace;
     this.isAlterViewAs = isAlterViewAs;
     this.isMaterialized = false;
+    this.rewriteEnabled = false;
     this.inputFormat = inputFormat;
     this.outputFormat = outputFormat;
     this.serde = serde;
@@ -156,6 +161,15 @@ public class CreateViewDesc extends DDLDesc implements Serializable {
 
   public void setViewExpandedText(String expandedText) {
     this.expandedText = expandedText;
+  }
+
+  @Explain(displayName = "rewrite enabled")
+  public boolean isRewriteEnabled() {
+    return rewriteEnabled;
+  }
+
+  public void setRewriteEnabled(boolean rewriteEnabled) {
+    this.rewriteEnabled = rewriteEnabled;
   }
 
   @Explain(displayName = "columns")
@@ -257,6 +271,9 @@ public class CreateViewDesc extends DDLDesc implements Serializable {
     return isMaterialized;
   }
 
+  public void setLocation(String location) {
+    this.location = location;
+  }
   public String getLocation() {
     return location;
   }
@@ -273,4 +290,21 @@ public class CreateViewDesc extends DDLDesc implements Serializable {
     return serdeProps;
   }
 
+  /**
+   * @param replicationSpec Sets the replication spec governing this create.
+   * This parameter will have meaningful values only for creates happening as a result of a replication.
+   */
+  public void setReplicationSpec(ReplicationSpec replicationSpec) {
+    this.replicationSpec = replicationSpec;
+  }
+
+  /**
+   * @return what kind of replication spec this create is running under.
+   */
+  public ReplicationSpec getReplicationSpec(){
+    if (replicationSpec == null){
+      this.replicationSpec = new ReplicationSpec();
+    }
+    return this.replicationSpec;
+  }
 }

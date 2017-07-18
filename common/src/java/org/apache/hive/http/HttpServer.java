@@ -33,6 +33,7 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
 import com.google.common.base.Preconditions;
+
 import org.apache.commons.math3.util.Pair;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
@@ -42,7 +43,6 @@ import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authentication.server.AuthenticationFilter;
 import org.apache.hadoop.security.authorize.AccessControlList;
-import org.apache.hadoop.util.Shell;
 import org.apache.hadoop.hive.common.classification.InterfaceAudience;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.core.Appender;
@@ -51,12 +51,16 @@ import org.apache.logging.log4j.core.LoggerContext;
 import org.apache.logging.log4j.core.appender.AbstractOutputStreamAppender;
 import org.apache.logging.log4j.core.appender.FileManager;
 import org.apache.logging.log4j.core.appender.OutputStreamManager;
+import org.eclipse.jetty.rewrite.handler.RewriteHandler;
+import org.eclipse.jetty.rewrite.handler.RewriteRegexRule;
 import org.eclipse.jetty.server.Connector;
+import org.eclipse.jetty.server.HttpConfiguration;
+import org.eclipse.jetty.server.HttpConnectionFactory;
+import org.eclipse.jetty.server.LowResourceMonitor;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.handler.ContextHandler.Context;
 import org.eclipse.jetty.server.handler.ContextHandlerCollection;
-import org.eclipse.jetty.server.nio.SelectChannelConnector;
-import org.eclipse.jetty.server.ssl.SslSelectChannelConnector;
+import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.servlet.DefaultServlet;
 import org.eclipse.jetty.servlet.FilterHolder;
 import org.eclipse.jetty.servlet.FilterMapping;
@@ -83,9 +87,9 @@ public class HttpServer {
   public static final String ADMINS_ACL = "admins.acl";
 
   private final String name;
-  private final String appDir;
-  private final WebAppContext webAppContext;
-  private final Server webServer;
+  private String appDir;
+  private WebAppContext webAppContext;
+  private Server webServer;
 
   /**
    * Create a status server on the given port.
@@ -93,16 +97,7 @@ public class HttpServer {
   private HttpServer(final Builder b) throws IOException {
     this.name = b.name;
 
-    webServer = new Server();
-    appDir = getWebAppsPath(b.name);
-    webAppContext = createWebAppContext(b);
-
-    if (b.useSPNEGO) {
-      // Secure the web server with kerberos
-      setupSpnegoFilter(b);
-    }
-
-    initializeWebServer(b);
+    createWebServer(b);
   }
 
   public static class Builder {
@@ -118,6 +113,7 @@ public class HttpServer {
     private String spnegoKeytab;
     private boolean useSPNEGO;
     private boolean useSSL;
+    private String contextRootRewriteTarget = "/index.html";
     private final List<Pair<String, Class<? extends HttpServlet>>> servlets =
         new LinkedList<Pair<String, Class<? extends HttpServlet>>>();
 
@@ -195,6 +191,11 @@ public class HttpServer {
       return this;
     }
 
+    public Builder setContextRootRewriteTarget(String contextRootRewriteTarget) {
+      this.contextRootRewriteTarget = contextRootRewriteTarget;
+      return this;
+    }
+
     public Builder addServlet(String endpoint, Class<? extends HttpServlet> servlet) {
       servlets.add(new Pair<String, Class<? extends HttpServlet>>(endpoint, servlet));
       return this;
@@ -211,18 +212,20 @@ public class HttpServer {
   }
 
   public int getPort() {
-    return webServer.getConnectors()[0].getLocalPort();
+    return ((ServerConnector)(webServer.getConnectors()[0])).getLocalPort();
   }
 
   /**
    * Checks the user has privileges to access to instrumentation servlets.
-   * <p/>
+   * <p>
    * If <code>hadoop.security.instrumentation.requires.admin</code> is set to FALSE
    * (default value) it always returns TRUE.
-   * <p/>
+   * </p>
+   * <p>
    * If <code>hadoop.security.instrumentation.requires.admin</code> is set to TRUE
    * it will check if the current user is in the admin ACLS. If the user is
    * in the admin ACLs it returns TRUE, otherwise it returns FALSE.
+   * </p>
    *
    * @param servletContext the servlet context.
    * @param request the servlet request.
@@ -337,9 +340,14 @@ public class HttpServer {
    * Create a channel connector for "http/https" requests
    */
   Connector createChannelConnector(int queueSize, Builder b) {
-    SelectChannelConnector connector;
+    ServerConnector connector;
+
+    final HttpConfiguration conf = new HttpConfiguration();
+    conf.setRequestHeaderSize(1024*64);
+    final HttpConnectionFactory http = new HttpConnectionFactory(conf);
+
     if (!b.useSSL) {
-      connector = new SelectChannelConnector();
+      connector = new ServerConnector(webServer, http);
     } else {
       SslContextFactory sslContextFactory = new SslContextFactory();
       sslContextFactory.setKeyStorePath(b.keyStorePath);
@@ -349,15 +357,13 @@ public class HttpServer {
       sslContextFactory.addExcludeProtocols(excludedSSLProtocols.toArray(
           new String[excludedSSLProtocols.size()]));
       sslContextFactory.setKeyStorePassword(b.keyStorePassword);
-      connector = new SslSelectChannelConnector(sslContextFactory);
+      connector = new ServerConnector(webServer, sslContextFactory, http);
     }
 
-    connector.setLowResourcesMaxIdleTime(10000);
     connector.setAcceptQueueSize(queueSize);
-    connector.setResolveNames(false);
-    connector.setUseDirectBuffers(false);
-    connector.setRequestHeaderSize(1024*64);
-    connector.setReuseAddress(!Shell.WINDOWS);
+    connector.setReuseAddress(true);
+    connector.setHost(b.host);
+    connector.setPort(b.port);
     return connector;
   }
 
@@ -370,7 +376,7 @@ public class HttpServer {
     }
   }
 
-  void initializeWebServer(Builder b) {
+  private void createWebServer(final Builder b) throws IOException {
     // Create the thread pool for the web server to handle HTTP requests
     QueuedThreadPool threadPool = new QueuedThreadPool();
     if (b.maxThreads > 0) {
@@ -378,22 +384,49 @@ public class HttpServer {
     }
     threadPool.setDaemon(true);
     threadPool.setName(b.name + "-web");
-    webServer.setThreadPool(threadPool);
 
-    // Create the channel connector for the web server
-    Connector connector = createChannelConnector(threadPool.getMaxThreads(), b);
-    connector.setHost(b.host);
-    connector.setPort(b.port);
+    this.webServer = new Server(threadPool);
+    this.appDir = getWebAppsPath(b.name);
+    this.webAppContext = createWebAppContext(b);
+
+    if (b.useSPNEGO) {
+      // Secure the web server with kerberos
+      setupSpnegoFilter(b);
+    }
+
+    initializeWebServer(b, threadPool.getMaxThreads());
+  }
+
+  private void initializeWebServer(final Builder b, int queueSize) {
+    // Set handling for low resource conditions.
+    final LowResourceMonitor low = new LowResourceMonitor(webServer);
+    low.setLowResourcesIdleTimeout(10000);
+    webServer.addBean(low);
+
+    Connector connector = createChannelConnector(queueSize, b);
     webServer.addConnector(connector);
+
+    RewriteHandler rwHandler = new RewriteHandler();
+    rwHandler.setRewriteRequestURI(true);
+    rwHandler.setRewritePathInfo(false);
+
+    RewriteRegexRule rootRule = new RewriteRegexRule();
+    rootRule.setRegex("^/$");
+    rootRule.setReplacement(b.contextRootRewriteTarget);
+    rootRule.setTerminating(true);
+
+    rwHandler.addRule(rootRule);
+    rwHandler.setHandler(webAppContext);
 
     // Configure web application contexts for the web server
     ContextHandlerCollection contexts = new ContextHandlerCollection();
-    contexts.addHandler(webAppContext);
+    contexts.addHandler(rwHandler);
     webServer.setHandler(contexts);
 
     addServlet("jmx", "/jmx", JMXJsonServlet.class);
     addServlet("conf", "/conf", ConfServlet.class);
     addServlet("stacks", "/stacks", StackServlet.class);
+    addServlet("conflog", "/conflog", Log4j2ConfiguratorServlet.class);
 
     for (Pair<String, Class<? extends HttpServlet>> p : b.servlets) {
       addServlet(p.getFirst(), "/" + p.getFirst(), p.getSecond());

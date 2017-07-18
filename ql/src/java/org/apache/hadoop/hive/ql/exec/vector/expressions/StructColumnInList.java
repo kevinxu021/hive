@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.hive.ql.exec.vector.expressions;
 
+import java.util.Arrays;
 import java.util.List;
 
 import org.apache.hadoop.hive.ql.exec.vector.VectorExpressionDescriptor.Descriptor;
@@ -113,7 +114,7 @@ public class StructColumnInList extends StringColumnInList implements IStructInE
           case DECIMAL:
             DecimalColumnVector decColVector = ((DecimalColumnVector) colVec);
             binarySortableSerializeWrite.writeHiveDecimal(
-                decColVector.vector[adjustedIndex].getHiveDecimal(), decColVector.scale);
+                decColVector.vector[adjustedIndex], decColVector.scale);
             break;
 
           default:
@@ -171,5 +172,12 @@ public class StructColumnInList extends StringColumnInList implements IStructInE
       structColumnMap[i] = ve.getOutputColumn();
     }
     this.fieldVectorColumnTypes = fieldVectorColumnTypes;
+  }
+
+  @Override
+  public String vectorExpressionParameters() {
+    return "structExpressions " + Arrays.toString(structExpressions) +
+        ", fieldVectorColumnTypes " + Arrays.toString(fieldVectorColumnTypes) +
+        ", structColumnMap " + Arrays.toString(structColumnMap);
   }
 }

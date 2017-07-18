@@ -101,7 +101,8 @@ public class JoinOperator extends CommonJoinOperator<JoinDesc> implements Serial
       // Are we consuming too much memory
       if (alias == numAliases - 1 && !(handleSkewJoin && skewJoinKeyContext.currBigKeyTag >= 0) &&
           !hasLeftSemiJoin) {
-        if (sz == joinEmitInterval && !hasFilter(alias)) {
+        if (sz == joinEmitInterval && !hasFilter(condn[alias-1].getLeft()) &&
+                !hasFilter(condn[alias-1].getRight())) {
           // The input is sorted by alias, so if we are already in the last join
           // operand,
           // we can emit some results now.
@@ -112,7 +113,7 @@ public class JoinOperator extends CommonJoinOperator<JoinDesc> implements Serial
           storage[alias].clearRows();
         }
       } else {
-        if (isLogInfoEnabled && (sz == nextSz)) {
+        if (LOG.isInfoEnabled() && (sz == nextSz)) {
           // Print a message if we reached at least 1000 rows for a join operand
           // We won't print a message for the last join operand since the size
           // will never goes to joinEmitInterval.

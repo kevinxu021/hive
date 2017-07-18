@@ -73,7 +73,8 @@ public class RetryingThriftCLIServiceClient implements InvocationHandler {
     private final ICLIService cliService;
     private TTransport tTransport;
 
-    public CLIServiceClientWrapper(ICLIService icliService, TTransport tTransport) {
+    public CLIServiceClientWrapper(ICLIService icliService, TTransport tTransport, HiveConf conf) {
+      super(conf);
       cliService = icliService;
       this.tTransport = tTransport;
     }
@@ -189,8 +190,8 @@ public class RetryingThriftCLIServiceClient implements InvocationHandler {
     }
 
     @Override
-    public OperationStatus getOperationStatus(OperationHandle opHandle) throws HiveSQLException {
-      return cliService.getOperationStatus(opHandle);
+    public OperationStatus getOperationStatus(OperationHandle opHandle, boolean getProgressUpdate) throws HiveSQLException {
+      return cliService.getOperationStatus(opHandle, getProgressUpdate);
     }
 
     @Override
@@ -249,7 +250,7 @@ public class RetryingThriftCLIServiceClient implements InvocationHandler {
     ICLIService cliService =
       (ICLIService) Proxy.newProxyInstance(RetryingThriftCLIServiceClient.class.getClassLoader(),
         CLIServiceClient.class.getInterfaces(), retryClient);
-    return new CLIServiceClientWrapper(cliService, tTransport);
+    return new CLIServiceClientWrapper(cliService, tTransport, conf);
   }
 
   protected TTransport connectWithRetry(int retries) throws HiveSQLException {
@@ -299,7 +300,7 @@ public class RetryingThriftCLIServiceClient implements InvocationHandler {
 
     TProtocol protocol = new TBinaryProtocol(transport);
     transport.open();
-    base = new ThriftCLIServiceClient(new TCLIService.Client(protocol));
+    base = new ThriftCLIServiceClient(new TCLIService.Client(protocol), conf);
     LOG.info("Connected!");
     return transport;
   }

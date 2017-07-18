@@ -619,13 +619,13 @@ public class GetFileMetadataByExprRequest implements org.apache.thrift.TBase<Get
           case 1: // FILE_IDS
             if (schemeField.type == org.apache.thrift.protocol.TType.LIST) {
               {
-                org.apache.thrift.protocol.TList _list584 = iprot.readListBegin();
-                struct.fileIds = new ArrayList<Long>(_list584.size);
-                long _elem585;
-                for (int _i586 = 0; _i586 < _list584.size; ++_i586)
+                org.apache.thrift.protocol.TList _list624 = iprot.readListBegin();
+                struct.fileIds = new ArrayList<Long>(_list624.size);
+                long _elem625;
+                for (int _i626 = 0; _i626 < _list624.size; ++_i626)
                 {
-                  _elem585 = iprot.readI64();
-                  struct.fileIds.add(_elem585);
+                  _elem625 = iprot.readI64();
+                  struct.fileIds.add(_elem625);
                 }
                 iprot.readListEnd();
               }
@@ -675,9 +675,9 @@ public class GetFileMetadataByExprRequest implements org.apache.thrift.TBase<Get
         oprot.writeFieldBegin(FILE_IDS_FIELD_DESC);
         {
           oprot.writeListBegin(new org.apache.thrift.protocol.TList(org.apache.thrift.protocol.TType.I64, struct.fileIds.size()));
-          for (long _iter587 : struct.fileIds)
+          for (long _iter627 : struct.fileIds)
           {
-            oprot.writeI64(_iter587);
+            oprot.writeI64(_iter627);
           }
           oprot.writeListEnd();
         }
@@ -719,9 +719,9 @@ public class GetFileMetadataByExprRequest implements org.apache.thrift.TBase<Get
       TTupleProtocol oprot = (TTupleProtocol) prot;
       {
         oprot.writeI32(struct.fileIds.size());
-        for (long _iter588 : struct.fileIds)
+        for (long _iter628 : struct.fileIds)
         {
-          oprot.writeI64(_iter588);
+          oprot.writeI64(_iter628);
         }
       }
       oprot.writeBinary(struct.expr);
@@ -745,13 +745,13 @@ public class GetFileMetadataByExprRequest implements org.apache.thrift.TBase<Get
     public void read(org.apache.thrift.protocol.TProtocol prot, GetFileMetadataByExprRequest struct) throws org.apache.thrift.TException {
       TTupleProtocol iprot = (TTupleProtocol) prot;
       {
-        org.apache.thrift.protocol.TList _list589 = new org.apache.thrift.protocol.TList(org.apache.thrift.protocol.TType.I64, iprot.readI32());
-        struct.fileIds = new ArrayList<Long>(_list589.size);
-        long _elem590;
-        for (int _i591 = 0; _i591 < _list589.size; ++_i591)
+        org.apache.thrift.protocol.TList _list629 = new org.apache.thrift.protocol.TList(org.apache.thrift.protocol.TType.I64, iprot.readI32());
+        struct.fileIds = new ArrayList<Long>(_list629.size);
+        long _elem630;
+        for (int _i631 = 0; _i631 < _list629.size; ++_i631)
         {
-          _elem590 = iprot.readI64();
-          struct.fileIds.add(_elem590);
+          _elem630 = iprot.readI64();
+          struct.fileIds.add(_elem630);
         }
       }
       struct.setFileIdsIsSet(true);

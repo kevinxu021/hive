@@ -201,7 +201,12 @@
 
 <property>
   <name>spark.master</name>
-  <value>yarn-cluster</value>
+  <value>yarn</value>
+</property>
+
+<property>
+  <name>spark.submit.deployMode</name>
+  <value>cluster</value>
 </property>
 
 <property>
@@ -236,7 +241,7 @@
 
 <property>
   <name>spark.executor.memory</name>
-  <value>1g</value>
+  <value>512m</value>
 </property>
 
 <property>
@@ -246,7 +251,7 @@
 
 <property>
   <name>spark.driver.memory</name>
-  <value>1g</value>
+  <value>512m</value>
 </property>
 
 <property>

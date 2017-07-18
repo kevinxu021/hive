@@ -1,3 +1,5 @@
+set hive.strict.checks.bucketing=false;
+
 set hive.mapred.mode=nonstrict;
 set hive.explain.user=false;
 set hive.join.emit.interval=100000;
@@ -7,6 +9,8 @@ set hive.tez.dynamic.partition.pruning=true;
 set hive.optimize.metadataonly=false;
 set hive.optimize.index.filter=true;
 set hive.vectorized.execution.enabled=true;
+set hive.tez.min.bloom.filter.entries=1;
+set hive.tez.bigtable.minsize.semijoin.reduction=1;
 
 -- SORT_QUERY_RESULTS
 

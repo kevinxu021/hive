@@ -1,3 +1,5 @@
+set hive.strict.checks.bucketing=false;
+
 set hive.input.format=org.apache.hadoop.hive.ql.io.HiveInputFormat;
 
 CREATE TABLE srcbucket_mapjoin_part_1 (key INT, value STRING) PARTITIONED BY (part STRING) 
@@ -18,7 +20,7 @@ LOAD DATA LOCAL INPATH '../../data/files/srcbucket20.txt' INTO TABLE srcbucket_m
 LOAD DATA LOCAL INPATH '../../data/files/srcbucket21.txt' INTO TABLE srcbucket_mapjoin_part_3 PARTITION (part='1');
 
 ALTER TABLE srcbucket_mapjoin_part_3 CLUSTERED BY (key) INTO 2 BUCKETS;
-
+set hive.cbo.enable=false;
 set hive.optimize.bucketmapjoin=true;
 
 -- The partition bucketing metadata match but one table is not bucketed, bucket map join should still be used

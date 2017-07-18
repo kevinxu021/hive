@@ -8,31 +8,25 @@ POSTHOOK: Output: database:default
 POSTHOOK: Output: default@partitioned1
 PREHOOK: query: insert into table partitioned1 partition(part=1) values(1, 'original'),(2, 'original'), (3, 'original'),(4, 'original')
 PREHOOK: type: QUERY
-PREHOOK: Input: default@values__tmp__table__1
 PREHOOK: Output: default@partitioned1@part=1
 POSTHOOK: query: insert into table partitioned1 partition(part=1) values(1, 'original'),(2, 'original'), (3, 'original'),(4, 'original')
 POSTHOOK: type: QUERY
-POSTHOOK: Input: default@values__tmp__table__1
 POSTHOOK: Output: default@partitioned1@part=1
 POSTHOOK: Lineage: partitioned1 PARTITION(part=1).a EXPRESSION [(values__tmp__table__1)values__tmp__table__1.FieldSchema(name:tmp_values_col1, type:string, comment:), ]
 POSTHOOK: Lineage: partitioned1 PARTITION(part=1).b SIMPLE [(values__tmp__table__1)values__tmp__table__1.FieldSchema(name:tmp_values_col2, type:string, comment:), ]
-PREHOOK: query: -- Table-Non-Cascade ADD COLUMNS ...
-alter table partitioned1 add columns(c int, d string)
+PREHOOK: query: alter table partitioned1 add columns(c int, d string)
 PREHOOK: type: ALTERTABLE_ADDCOLS
 PREHOOK: Input: default@partitioned1
 PREHOOK: Output: default@partitioned1
-POSTHOOK: query: -- Table-Non-Cascade ADD COLUMNS ...
-alter table partitioned1 add columns(c int, d string)
+POSTHOOK: query: alter table partitioned1 add columns(c int, d string)
 POSTHOOK: type: ALTERTABLE_ADDCOLS
 POSTHOOK: Input: default@partitioned1
 POSTHOOK: Output: default@partitioned1
 PREHOOK: query: insert into table partitioned1 partition(part=2) values(1, 'new', 10, 'ten'),(2, 'new', NULL, 'twenty'), (3, 'new', 30, 'thirty'),(4, 'new', 40, 'forty')
 PREHOOK: type: QUERY
-PREHOOK: Input: default@values__tmp__table__2
 PREHOOK: Output: default@partitioned1@part=2
 POSTHOOK: query: insert into table partitioned1 partition(part=2) values(1, 'new', 10, 'ten'),(2, 'new', NULL, 'twenty'), (3, 'new', 30, 'thirty'),(4, 'new', 40, 'forty')
 POSTHOOK: type: QUERY
-POSTHOOK: Input: default@values__tmp__table__2
 POSTHOOK: Output: default@partitioned1@part=2
 POSTHOOK: Lineage: partitioned1 PARTITION(part=2).a EXPRESSION [(values__tmp__table__2)values__tmp__table__2.FieldSchema(name:tmp_values_col1, type:string, comment:), ]
 POSTHOOK: Lineage: partitioned1 PARTITION(part=2).b SIMPLE [(values__tmp__table__2)values__tmp__table__2.FieldSchema(name:tmp_values_col2, type:string, comment:), ]
@@ -43,12 +37,18 @@ PREHOOK: type: QUERY
 PREHOOK: Input: default@partitioned1
 PREHOOK: Input: default@partitioned1@part=1
 PREHOOK: Input: default@partitioned1@part=2
+PREHOOK: Output: default@partitioned1
+PREHOOK: Output: default@partitioned1@part=1
+PREHOOK: Output: default@partitioned1@part=2
 #### A masked pattern was here ####
 POSTHOOK: query: analyze table partitioned1 compute statistics for columns
 POSTHOOK: type: QUERY
 POSTHOOK: Input: default@partitioned1
 POSTHOOK: Input: default@partitioned1@part=1
 POSTHOOK: Input: default@partitioned1@part=2
+POSTHOOK: Output: default@partitioned1
+POSTHOOK: Output: default@partitioned1@part=1
+POSTHOOK: Output: default@partitioned1@part=2
 #### A masked pattern was here ####
 PREHOOK: query: desc formatted partitioned1
 PREHOOK: type: DESCTABLE
@@ -75,6 +75,13 @@ Retention:          	0
 #### A masked pattern was here ####
 Table Type:         	MANAGED_TABLE       	 
 Table Parameters:	 	 
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
+#### A masked pattern was here ####
+	numFiles            	2                   
+	numPartitions       	2                   
+	numRows             	8                   
+	rawDataSize         	96                  
+	totalSize           	104                 
 #### A masked pattern was here ####
 	 	 
 # Storage Information	 	 
@@ -208,31 +215,25 @@ POSTHOOK: Output: database:default
 POSTHOOK: Output: default@partitioned1
 PREHOOK: query: insert into table partitioned1 partition(part=1) values(1, 'original'),(2, 'original'), (3, 'original'),(4, 'original')
 PREHOOK: type: QUERY
-PREHOOK: Input: default@values__tmp__table__3
 PREHOOK: Output: default@partitioned1@part=1
 POSTHOOK: query: insert into table partitioned1 partition(part=1) values(1, 'original'),(2, 'original'), (3, 'original'),(4, 'original')
 POSTHOOK: type: QUERY
-POSTHOOK: Input: default@values__tmp__table__3
 POSTHOOK: Output: default@partitioned1@part=1
 POSTHOOK: Lineage: partitioned1 PARTITION(part=1).a EXPRESSION [(values__tmp__table__3)values__tmp__table__3.FieldSchema(name:tmp_values_col1, type:string, comment:), ]
 POSTHOOK: Lineage: partitioned1 PARTITION(part=1).b SIMPLE [(values__tmp__table__3)values__tmp__table__3.FieldSchema(name:tmp_values_col2, type:string, comment:), ]
-PREHOOK: query: -- Table-Non-Cascade ADD COLUMNS ...
-alter table partitioned1 add columns(c int, d string)
+PREHOOK: query: alter table partitioned1 add columns(c int, d string)
 PREHOOK: type: ALTERTABLE_ADDCOLS
 PREHOOK: Input: default@partitioned1
 PREHOOK: Output: default@partitioned1
-POSTHOOK: query: -- Table-Non-Cascade ADD COLUMNS ...
-alter table partitioned1 add columns(c int, d string)
+POSTHOOK: query: alter table partitioned1 add columns(c int, d string)
 POSTHOOK: type: ALTERTABLE_ADDCOLS
 POSTHOOK: Input: default@partitioned1
 POSTHOOK: Output: default@partitioned1
 PREHOOK: query: insert into table partitioned1 partition(part=2) values(1, 'new', 10, 'ten'),(2, 'new', NULL, 'twenty'), (3, 'new', 30, 'thirty'),(4, 'new', 40, 'forty')
 PREHOOK: type: QUERY
-PREHOOK: Input: default@values__tmp__table__4
 PREHOOK: Output: default@partitioned1@part=2
 POSTHOOK: query: insert into table partitioned1 partition(part=2) values(1, 'new', 10, 'ten'),(2, 'new', NULL, 'twenty'), (3, 'new', 30, 'thirty'),(4, 'new', 40, 'forty')
 POSTHOOK: type: QUERY
-POSTHOOK: Input: default@values__tmp__table__4
 POSTHOOK: Output: default@partitioned1@part=2
 POSTHOOK: Lineage: partitioned1 PARTITION(part=2).a EXPRESSION [(values__tmp__table__4)values__tmp__table__4.FieldSchema(name:tmp_values_col1, type:string, comment:), ]
 POSTHOOK: Lineage: partitioned1 PARTITION(part=2).b SIMPLE [(values__tmp__table__4)values__tmp__table__4.FieldSchema(name:tmp_values_col2, type:string, comment:), ]
@@ -243,12 +244,18 @@ PREHOOK: type: QUERY
 PREHOOK: Input: default@partitioned1
 PREHOOK: Input: default@partitioned1@part=1
 PREHOOK: Input: default@partitioned1@part=2
+PREHOOK: Output: default@partitioned1
+PREHOOK: Output: default@partitioned1@part=1
+PREHOOK: Output: default@partitioned1@part=2
 #### A masked pattern was here ####
 POSTHOOK: query: analyze table partitioned1 compute statistics for columns
 POSTHOOK: type: QUERY
 POSTHOOK: Input: default@partitioned1
 POSTHOOK: Input: default@partitioned1@part=1
 POSTHOOK: Input: default@partitioned1@part=2
+POSTHOOK: Output: default@partitioned1
+POSTHOOK: Output: default@partitioned1@part=1
+POSTHOOK: Output: default@partitioned1@part=2
 #### A masked pattern was here ####
 PREHOOK: query: desc formatted partitioned1
 PREHOOK: type: DESCTABLE
@@ -275,6 +282,13 @@ Retention:          	0
 #### A masked pattern was here ####
 Table Type:         	MANAGED_TABLE       	 
 Table Parameters:	 	 
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
+#### A masked pattern was here ####
+	numFiles            	2                   
+	numPartitions       	2                   
+	numRows             	8                   
+	rawDataSize         	1116                
+	totalSize           	819                 
 #### A masked pattern was here ####
 	 	 
 # Storage Information	 	 

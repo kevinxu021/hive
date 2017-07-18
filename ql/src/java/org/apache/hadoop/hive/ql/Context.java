@@ -44,15 +44,16 @@ import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.exec.TaskRunner;
 import org.apache.hadoop.hive.ql.exec.Utilities;
 import org.apache.hadoop.hive.ql.hooks.WriteEntity;
-import org.apache.hadoop.hive.ql.io.AcidUtils;
 import org.apache.hadoop.hive.ql.lockmgr.DbTxnManager.Heartbeater;
 import org.apache.hadoop.hive.ql.lockmgr.HiveLock;
 import org.apache.hadoop.hive.ql.lockmgr.HiveLockObj;
 import org.apache.hadoop.hive.ql.lockmgr.HiveTxnManager;
 import org.apache.hadoop.hive.ql.lockmgr.LockException;
 import org.apache.hadoop.hive.ql.metadata.Table;
+import org.apache.hadoop.hive.ql.parse.ASTNode;
 import org.apache.hadoop.hive.ql.parse.ExplainConfiguration;
 import org.apache.hadoop.hive.ql.parse.ExplainConfiguration.AnalyzeState;
+import org.apache.hadoop.hive.ql.parse.HiveParser;
 import org.apache.hadoop.hive.ql.plan.LoadTableDesc;
 import org.apache.hadoop.hive.ql.session.SessionState;
 import org.apache.hadoop.hive.shims.ShimLoader;
@@ -99,18 +100,13 @@ public class Context {
   protected int tryCount = 0;
   private TokenRewriteStream tokenRewriteStream;
 
-  private String executionId;
+  private final String executionId;
 
   // List of Locks for this query
   protected List<HiveLock> hiveLocks;
 
   // Transaction manager for this query
   protected HiveTxnManager hiveTxnManager;
-
-  // Used to track what type of acid operation (insert, update, or delete) we are doing.  Useful
-  // since we want to change where bucket columns are accessed in some operators and
-  // optimizations when doing updates and deletes.
-  private AcidUtils.Operation acidOperation = AcidUtils.Operation.NOT_ACID;
 
   private boolean needLockMgr;
 
@@ -127,9 +123,129 @@ public class Context {
   private final String stagingDir;
 
   private Heartbeater heartbeater;
-  
+
   private boolean skipTableMasking;
 
+  // Identify whether the query involves an UPDATE, DELETE or MERGE
+  private boolean isUpdateDeleteMerge;
+
+  /**
+   * This determines the prefix of the
+   * {@link org.apache.hadoop.hive.ql.parse.SemanticAnalyzer.Phase1Ctx#dest}
+   * name for a given subtree of the AST.  Most of the times there is only 1 destination in a
+   * given tree but multi-insert has several and multi-insert representing MERGE must use
+   * different prefixes to encode the purpose of different Insert branches
+   */
+  private Map<Integer, DestClausePrefix> insertBranchToNamePrefix = new HashMap<>();
+  private Operation operation = Operation.OTHER;
+  public void setOperation(Operation operation) {
+    this.operation = operation;
+  }
+
+  /**
+   * These ops require special handling in various places
+   * (note that Insert into Acid table is in OTHER category)
+   */
+  public enum Operation {UPDATE, DELETE, MERGE, OTHER};
+  public enum DestClausePrefix {
+    INSERT("insclause-"), UPDATE("updclause-"), DELETE("delclause-");
+    private final String prefix;
+    DestClausePrefix(String prefix) {
+      this.prefix = prefix;
+    }
+    public String toString() {
+      return prefix;
+    }
+  }
+  private String getMatchedText(ASTNode n) {
+    return getTokenRewriteStream().toString(n.getTokenStartIndex(), n.getTokenStopIndex() + 1).trim();
+  }
+  /**
+   * The suffix is always relative to a given ASTNode
+   */
+  public DestClausePrefix getDestNamePrefix(ASTNode curNode) {
+    assert curNode != null : "must supply curNode";
+    if(curNode.getType() != HiveParser.TOK_INSERT_INTO) {
+      //select statement
+      assert curNode.getType() == HiveParser.TOK_DESTINATION;
+      if(operation == Operation.OTHER) {
+        //not an 'interesting' op
+        return DestClausePrefix.INSERT;
+      }
+      //if it is an 'interesting' op but it's a select it must be a sub-query or a derived table
+      //it doesn't require a special Acid code path - the reset of the code here is to ensure
+      //the tree structure is what we expect
+      boolean thisIsInASubquery = false;
+      parentLoop: while(curNode.getParent() != null) {
+        curNode = (ASTNode) curNode.getParent();
+        switch (curNode.getType()) {
+          case HiveParser.TOK_SUBQUERY_EXPR:
+            //this is a real subquery (foo IN (select ...))
+          case HiveParser.TOK_SUBQUERY:
+            //this is a Derived Table Select * from (select a from ...))
+            //strictly speaking SetOps should have a TOK_SUBQUERY parent so next 6 items are redundant
+          case HiveParser.TOK_UNIONALL:
+          case HiveParser.TOK_UNIONDISTINCT:
+          case HiveParser.TOK_EXCEPTALL:
+          case HiveParser.TOK_EXCEPTDISTINCT:
+          case HiveParser.TOK_INTERSECTALL:
+          case HiveParser.TOK_INTERSECTDISTINCT:
+            thisIsInASubquery = true;
+            break parentLoop;
+        }
+      }
+      if(!thisIsInASubquery) {
+        throw new IllegalStateException("Expected '" + getMatchedText(curNode) + "' to be in sub-query or set operation.");
+      } 
+      return DestClausePrefix.INSERT;
+    }
+    switch (operation) {
+      case OTHER:
+        return DestClausePrefix.INSERT;
+      case UPDATE:
+        return DestClausePrefix.UPDATE;
+      case DELETE:
+        return DestClausePrefix.DELETE;
+      case MERGE:
+      /* This is the structrue expected here
+        HiveParser.TOK_QUERY;
+          HiveParser.TOK_FROM
+          HiveParser.TOK_INSERT;
+            HiveParser.TOK_INSERT_INTO;
+          HiveParser.TOK_INSERT;
+            HiveParser.TOK_INSERT_INTO;
+          .....*/
+        ASTNode insert = (ASTNode) curNode.getParent();
+        assert insert != null && insert.getType() == HiveParser.TOK_INSERT;
+        ASTNode query = (ASTNode) insert.getParent();
+        assert query != null && query.getType() == HiveParser.TOK_QUERY;
+        
+        for(int childIdx = 1; childIdx < query.getChildCount(); childIdx++) {//1st child is TOK_FROM
+          assert query.getChild(childIdx).getType() == HiveParser.TOK_INSERT;
+          if(insert == query.getChild(childIdx)) {
+            DestClausePrefix prefix = insertBranchToNamePrefix.get(childIdx);
+            if(prefix == null) {
+              throw new IllegalStateException("Found a node w/o branch mapping: '" +
+                getMatchedText(insert) + "'");
+            }
+            return prefix;
+          }
+        }
+        throw new IllegalStateException("Could not locate '" + getMatchedText(insert) + "'");
+      default:
+        throw new IllegalStateException("Unexpected operation: " + operation);
+    }
+  }
+  /**
+   * Will make SemanticAnalyzer.Phase1Ctx#dest in subtree rooted at 'tree' use 'prefix'.  This to
+   * handle multi-insert stmt that represents Merge stmt and has insert branches representing
+   * update/delete/insert.
+   * @param pos ordinal index of specific TOK_INSERT as child of TOK_QUERY
+   * @return previous prefix for 'tree' or null
+   */
+  public DestClausePrefix addDestNamePrefix(int pos, DestClausePrefix prefix) {
+    return insertBranchToNamePrefix.put(pos, prefix);
+  }
   public Context(Configuration conf) throws IOException {
     this(conf, generateExecutionId());
   }
@@ -239,9 +355,7 @@ public class Context {
 
       if (mkdir) {
         try {
-          boolean inheritPerms = HiveConf.getBoolVar(conf,
-              HiveConf.ConfVars.HIVE_WAREHOUSE_SUBDIR_INHERIT_PERMS);
-          if (!FileUtils.mkdir(fs, dir, inheritPerms, conf)) {
+          if (!FileUtils.mkdir(fs, dir, conf)) {
             throw new IllegalStateException("Cannot create staging directory  '" + dir.toString() + "'");
           }
 
@@ -347,23 +461,40 @@ public class Context {
 
   /**
    * Create a temporary directory depending of the path specified.
+   * - If path is an Object store filesystem, then use the default MR scratch directory (HDFS), unless isFinalJob and
+   * {@link BlobStorageUtils#areOptimizationsEnabled(Configuration)} are both true, then return a path on
+   * the blobstore.
+   * - If path is on HDFS, then create a staging directory inside the path
+   *
+   * @param path Path used to verify the Filesystem to use for temporary directory
+   * @param isFinalJob true if the required {@link Path} will be used for the final job (e.g. the final FSOP)
+   *
+   * @return A path to the new temporary directory
+   */
+  public Path getTempDirForPath(Path path, boolean isFinalJob) {
+    if (((BlobStorageUtils.isBlobStoragePath(conf, path) && !BlobStorageUtils.isBlobStorageAsScratchDir(
+            conf)) || isPathLocal(path))) {
+      if (!(isFinalJob && BlobStorageUtils.areOptimizationsEnabled(conf))) {
+        // For better write performance, we use HDFS for temporary data when object store is used.
+        // Note that the scratch directory configuration variable must use HDFS or any other non-blobstorage system
+        // to take advantage of this performance.
+        return getMRTmpPath();
+      }
+    }
+    return getExtTmpPathRelTo(path);
+  }
+
+
+  /**
+   * Create a temporary directory depending of the path specified.
    * - If path is an Object store filesystem, then use the default MR scratch directory (HDFS)
    * - If path is on HDFS, then create a staging directory inside the path
    *
    * @param path Path used to verify the Filesystem to use for temporary directory
    * @return A path to the new temporary directory
-     */
+   */
   public Path getTempDirForPath(Path path) {
-    boolean isLocal = isPathLocal(path);
-    if ((BlobStorageUtils.isBlobStoragePath(conf, path) && !BlobStorageUtils.isBlobStorageAsScratchDir(conf))
-        || isLocal) {
-      // For better write performance, we use HDFS for temporary data when object store is used.
-      // Note that the scratch directory configuration variable must use HDFS or any other non-blobstorage system
-      // to take advantage of this performance.
-      return getMRTmpPath();
-    } else {
-      return getExtTmpPathRelTo(path);
-    }
+    return getTempDirForPath(path, false);
   }
 
   /*
@@ -392,6 +523,7 @@ public class Context {
       try {
         Path p = entry.getValue();
         FileSystem fs = p.getFileSystem(conf);
+        LOG.debug("Deleting scratch dir: {}",  p);
         fs.delete(p, true);
         fs.cancelDeleteOnExit(p);
       } catch (Exception e) {
@@ -533,6 +665,7 @@ public class Context {
     if (resDir != null) {
       try {
         FileSystem fs = resDir.getFileSystem(conf);
+        LOG.debug("Deleting result dir: {}",  resDir);
         fs.delete(resDir, true);
       } catch (IOException e) {
         LOG.info("Context clear error: " + StringUtils.stringifyException(e));
@@ -542,6 +675,7 @@ public class Context {
     if (resFile != null) {
       try {
         FileSystem fs = resFile.getFileSystem(conf);
+        LOG.debug("Deleting result file: {}",  resFile);
         fs.delete(resFile, false);
       } catch (IOException e) {
         LOG.info("Context clear error: " + StringUtils.stringifyException(e));
@@ -757,14 +891,6 @@ public class Context {
     this.tryCount = tryCount;
   }
 
-  public void setAcidOperation(AcidUtils.Operation op) {
-    acidOperation = op;
-  }
-
-  public AcidUtils.Operation getAcidOperation() {
-    return acidOperation;
-  }
-
   public String getCboInfo() {
     return cboInfo;
   }
@@ -822,6 +948,13 @@ public class Context {
   public ExplainConfiguration getExplainConfig() {
     return explainConfig;
   }
+  private boolean isExplainPlan = false;
+  public boolean isExplainPlan() {
+    return isExplainPlan;
+  }
+  public void setExplainPlan(boolean t) {
+    this.isExplainPlan = t;
+  }
 
   public void setExplainConfig(ExplainConfiguration explainConfig) {
     this.explainConfig = explainConfig;
@@ -830,5 +963,13 @@ public class Context {
   public void resetOpContext(){
     opContext = new CompilationOpContext();
     sequencer = new AtomicInteger();
+  }
+
+  public boolean getIsUpdateDeleteMerge() {
+    return isUpdateDeleteMerge;
+  }
+
+  public void setIsUpdateDeleteMerge(boolean isUpdate) {
+    this.isUpdateDeleteMerge = isUpdate;
   }
 }

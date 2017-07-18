@@ -31,6 +31,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import junit.framework.TestCase;
 
@@ -99,6 +103,8 @@ public abstract class TestHiveMetaStore extends TestCase {
 
   private static final int DEFAULT_LIMIT_PARTITION_REQUEST = 100;
 
+  protected abstract HiveMetaStoreClient createClient() throws Exception;
+
   @Override
   protected void setUp() throws Exception {
     hiveConf = new HiveConf(this.getClass());
@@ -110,6 +116,7 @@ public abstract class TestHiveMetaStore extends TestCase {
     hiveConf.set("hive.key2", "http://www.example.com");
     hiveConf.set("hive.key3", "");
     hiveConf.set("hive.key4", "0");
+    hiveConf.set("datanucleus.autoCreateTables", "false");
 
     hiveConf.setIntVar(ConfVars.METASTORE_BATCH_RETRIEVE_MAX, 2);
     hiveConf.setIntVar(ConfVars.METASTORE_LIMIT_PARTITION_REQUEST, DEFAULT_LIMIT_PARTITION_REQUEST);
@@ -171,14 +178,6 @@ public abstract class TestHiveMetaStore extends TestCase {
       db = client.getDatabase(dbName);
       Path dbPath = new Path(db.getLocationUri());
       FileSystem fs = FileSystem.get(dbPath.toUri(), hiveConf);
-      boolean inheritPerms = hiveConf.getBoolVar(
-          HiveConf.ConfVars.HIVE_WAREHOUSE_SUBDIR_INHERIT_PERMS);
-      FsPermission dbPermission = fs.getFileStatus(dbPath).getPermission();
-      if (inheritPerms) {
-         //Set different perms for the database dir for further tests
-         dbPermission = new FsPermission((short)488);
-         fs.setPermission(dbPath, dbPermission);
-      }
 
       client.dropType(typeName);
       Type typ1 = new Type();
@@ -239,9 +238,6 @@ public abstract class TestHiveMetaStore extends TestCase {
         tbl = client.getTable(dbName, tblName);
       }
 
-      assertEquals(dbPermission, fs.getFileStatus(new Path(tbl.getSd().getLocation()))
-          .getPermission());
-
       Partition part = makePartitionObject(dbName, tblName, vals, tbl, "/part1");
       Partition part2 = makePartitionObject(dbName, tblName, vals2, tbl, "/part2");
       Partition part3 = makePartitionObject(dbName, tblName, vals3, tbl, "/part3");
@@ -259,20 +255,12 @@ public abstract class TestHiveMetaStore extends TestCase {
       assertTrue("getPartition() should have thrown NoSuchObjectException", exceptionThrown);
       Partition retp = client.add_partition(part);
       assertNotNull("Unable to create partition " + part, retp);
-      assertEquals(dbPermission, fs.getFileStatus(new Path(retp.getSd().getLocation()))
-          .getPermission());
       Partition retp2 = client.add_partition(part2);
       assertNotNull("Unable to create partition " + part2, retp2);
-      assertEquals(dbPermission, fs.getFileStatus(new Path(retp2.getSd().getLocation()))
-          .getPermission());
       Partition retp3 = client.add_partition(part3);
       assertNotNull("Unable to create partition " + part3, retp3);
-      assertEquals(dbPermission, fs.getFileStatus(new Path(retp3.getSd().getLocation()))
-          .getPermission());
       Partition retp4 = client.add_partition(part4);
       assertNotNull("Unable to create partition " + part4, retp4);
-      assertEquals(dbPermission, fs.getFileStatus(new Path(retp4.getSd().getLocation()))
-          .getPermission());
 
       Partition part_get = client.getPartition(dbName, tblName, part.getValues());
       if(isThriftClient) {
@@ -394,8 +382,6 @@ public abstract class TestHiveMetaStore extends TestCase {
       // tested
       retp = client.add_partition(part);
       assertNotNull("Unable to create partition " + part, retp);
-      assertEquals(dbPermission, fs.getFileStatus(new Path(retp.getSd().getLocation()))
-          .getPermission());
 
       // test add_partitions
 
@@ -431,9 +417,8 @@ public abstract class TestHiveMetaStore extends TestCase {
 
       // create dir for /mpart5
       Path mp5Path = new Path(mpart5.getSd().getLocation());
-      warehouse.mkdirs(mp5Path, true);
+      warehouse.mkdirs(mp5Path);
       assertTrue(fs.exists(mp5Path));
-      assertEquals(dbPermission, fs.getFileStatus(mp5Path).getPermission());
 
       // add_partitions(5,4) : err = duplicate keyvals on mpart4
       savedException = null;
@@ -738,6 +723,7 @@ public abstract class TestHiveMetaStore extends TestCase {
     view.setViewOriginalText("SELECT income, name FROM " + tblName);
     view.setViewExpandedText("SELECT `" + tblName + "`.`income`, `" + tblName +
         "`.`name` FROM `" + dbName + "`.`" + tblName + "`");
+    view.setRewriteEnabled(false);
     StorageDescriptor viewSd = new StorageDescriptor();
     view.setSd(viewSd);
     viewSd.setCols(viewCols);
@@ -2501,7 +2487,7 @@ public abstract class TestHiveMetaStore extends TestCase {
       //test params
       //test_param_2 = "50"
       filter = org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.HIVE_FILTER_FIELD_PARAMS +
-          "test_param_2 = \"50\"";
+          "test_param_2 LIKE \"50\"";
 
       tableNames = client.listTableNamesByFilter(dbName, filter, (short)-1);
       assertEquals(2, tableNames.size());
@@ -2510,30 +2496,31 @@ public abstract class TestHiveMetaStore extends TestCase {
 
       //test_param_2 = "75"
       filter = org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.HIVE_FILTER_FIELD_PARAMS +
-          "test_param_2 = \"75\"";
+          "test_param_2 LIKE \"75\"";
 
       tableNames = client.listTableNamesByFilter(dbName, filter, (short)-1);
       assertEquals(0, tableNames.size());
 
       //key_dne = "50"
       filter = org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.HIVE_FILTER_FIELD_PARAMS +
-          "key_dne = \"50\"";
+          "key_dne LIKE \"50\"";
 
       tableNames = client.listTableNamesByFilter(dbName, filter, (short)-1);
       assertEquals(0, tableNames.size());
 
       //test_param_1 != "yellow"
       filter = org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.HIVE_FILTER_FIELD_PARAMS +
-          "test_param_1 <> \"yellow\"";
+          "test_param_1 NOT LIKE \"yellow\"";
 
-      tableNames = client.listTableNamesByFilter(dbName, filter, (short) 2);
-      assertEquals(2, tableNames.size());
+      // Commenting as part of HIVE-12274 != and <> are not supported for CLOBs
+      // tableNames = client.listTableNamesByFilter(dbName, filter, (short) 2);
+      // assertEquals(2, tableNames.size());
 
       filter = org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.HIVE_FILTER_FIELD_PARAMS +
-          "test_param_1 != \"yellow\"";
+          "test_param_1 NOT LIKE \"yellow\"";
 
-      tableNames = client.listTableNamesByFilter(dbName, filter, (short) 2);
-      assertEquals(2, tableNames.size());
+      // tableNames = client.listTableNamesByFilter(dbName, filter, (short) 2);
+      // assertEquals(2, tableNames.size());
 
       //owner = "testOwner1" and (lastAccessTime = 30 or test_param_1 = "hi")
       filter = org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.HIVE_FILTER_FIELD_OWNER +
@@ -2541,7 +2528,7 @@ public abstract class TestHiveMetaStore extends TestCase {
         org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.HIVE_FILTER_FIELD_LAST_ACCESS +
         " = 30 or " +
         org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.HIVE_FILTER_FIELD_PARAMS +
-        "test_param_1 = \"hi\")";
+        "test_param_1 LIKE \"hi\")";
       tableNames = client.listTableNamesByFilter(dbName, filter, (short)-1);
 
       assertEquals(2, tableNames.size());
@@ -3343,5 +3330,47 @@ public abstract class TestHiveMetaStore extends TestCase {
       System.err.println("testValidateTableCols() failed.");
       throw e;
     }
+  }
+
+  public void testGetMetastoreUuid() throws Throwable {
+    String uuid = client.getMetastoreDbUuid();
+    assertNotNull(uuid);
+  }
+
+  public void testGetUUIDInParallel() throws Exception {
+    int numThreads = 5;
+    int parallelCalls = 10;
+    int numAPICallsPerThread = 10;
+    ExecutorService executorService = Executors.newFixedThreadPool(numThreads);
+    List<Future<List<String>>> futures = new ArrayList<>();
+    for (int n = 0; n < parallelCalls; n++) {
+      futures.add(executorService.submit(new Callable<List<String>>() {
+        @Override
+        public List<String> call() throws Exception {
+          HiveMetaStoreClient testClient = new HiveMetaStoreClient(hiveConf);
+          List<String> uuids = new ArrayList<>(10);
+          for (int i = 0; i < numAPICallsPerThread; i++) {
+            String uuid = testClient.getMetastoreDbUuid();
+            uuids.add(uuid);
+          }
+          return uuids;
+        }
+      }));
+    }
+
+    String firstUUID = null;
+    List<String> allUuids = new ArrayList<String>();
+    for (Future<List<String>> future : futures) {
+      for (String uuid : future.get()) {
+        if (firstUUID == null) {
+          firstUUID = uuid;
+        } else {
+          assertEquals(firstUUID.toLowerCase(), uuid.toLowerCase());
+        }
+        allUuids.add(uuid);
+      }
+    }
+    int size = allUuids.size();
+    assertEquals(numAPICallsPerThread * parallelCalls, size);
   }
 }

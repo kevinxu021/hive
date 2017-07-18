@@ -44,6 +44,7 @@ import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
 import org.apache.hadoop.hive.ql.exec.vector.expressions.gen.*;
 import org.apache.hadoop.hive.ql.exec.vector.expressions.*;
 import org.apache.hadoop.hive.ql.util.TimestampUtils;
+import org.apache.hadoop.hive.serde2.io.DateWritable;
 import org.apache.hadoop.hive.serde2.io.TimestampWritable;
 import org.apache.hadoop.hive.serde2.typeinfo.HiveDecimalUtils;
 import org.junit.Test;
@@ -71,6 +72,21 @@ public class TestVectorTypeCasts {
     VectorExpression expr = new CastDoubleToLong(0, 1);
     expr.evaluate(b);
     Assert.assertEquals(1, resultV.vector[6]);
+  }
+
+  @Test
+  public void testCastDateToTimestamp() {
+    int[] intValues = new int[500];
+    VectorizedRowBatch b = TestVectorMathFunctions.getVectorizedRowBatchDateInTimestampOut(intValues);
+    TimestampColumnVector resultV = (TimestampColumnVector) b.cols[1];
+    b.cols[0].noNulls = true;
+    VectorExpression expr = new CastDateToTimestamp(0, 1);
+    expr.evaluate(b);
+    for (int i = 0; i < intValues.length; i++) {
+      Timestamp timestamp = resultV.asScratchTimestamp(i);
+      long actual = DateWritable.millisToDays(timestamp.getTime());
+      assertEquals(actual, intValues[i]);
+    }
   }
 
   @Test
@@ -204,6 +220,10 @@ public class TestVectorTypeCasts {
     // test basic case
     VectorizedRowBatch b = getBatchDecimalLong();
     VectorExpression expr = new CastDecimalToLong(0, 1);
+
+    // With the integer type range checking, we need to know the Hive data type.
+    expr.setOutputType("bigint");
+
     expr.evaluate(b);
     LongColumnVector r = (LongColumnVector) b.cols[1];
     assertEquals(1, r.vector[0]);
@@ -265,9 +285,9 @@ public class TestVectorTypeCasts {
 
     b.size = 3;
 
-    dv.vector[0].set(HiveDecimal.create("1.1").setScale(scale));
-    dv.vector[1].set(HiveDecimal.create("-2.2").setScale(scale));
-    dv.vector[2].set(HiveDecimal.create("9999999999999999.00").setScale(scale));
+    dv.vector[0].set(HiveDecimal.create("1.1"));
+    dv.vector[1].set(HiveDecimal.create("-2.2"));
+    dv.vector[2].set(HiveDecimal.create("9999999999999999.00"));
 
     return b;
   }
@@ -325,9 +345,9 @@ public class TestVectorTypeCasts {
 
     b.size = 3;
 
-    dv.vector[0].set(HiveDecimal.create("1.1").setScale(scale));
-    dv.vector[1].set(HiveDecimal.create("-2.2").setScale(scale));
-    dv.vector[2].set(HiveDecimal.create("9999999999999999.00").setScale(scale));
+    dv.vector[0].set(HiveDecimal.create("1.1"));
+    dv.vector[1].set(HiveDecimal.create("-2.2"));
+    dv.vector[2].set(HiveDecimal.create("9999999999999999.00"));
 
     return b;
   }
@@ -366,9 +386,9 @@ public class TestVectorTypeCasts {
 
     b.size = 3;
 
-    dv.vector[0].set(HiveDecimal.create("1.1").setScale(scale));
-    dv.vector[1].set(HiveDecimal.create("-2.2").setScale(scale));
-    dv.vector[2].set(HiveDecimal.create("9999999999999999.00").setScale(scale));
+    dv.vector[0].set(HiveDecimal.create("1.1"));
+    dv.vector[1].set(HiveDecimal.create("-2.2"));
+    dv.vector[2].set(HiveDecimal.create("9999999999999999.00"));
 
     return b;
   }
@@ -399,9 +419,9 @@ public class TestVectorTypeCasts {
 
     b.size = 3;
 
-    dv.vector[0].set(HiveDecimal.create("1.111111111").setScale(scale));
-    dv.vector[1].set(HiveDecimal.create("-2.222222222").setScale(scale));
-    dv.vector[2].set(HiveDecimal.create("31536000.999999999").setScale(scale));
+    dv.vector[0].set(HiveDecimal.create("1.111111111"));
+    dv.vector[1].set(HiveDecimal.create("-2.222222222"));
+    dv.vector[2].set(HiveDecimal.create("31536000.999999999"));
 
     return b;
   }

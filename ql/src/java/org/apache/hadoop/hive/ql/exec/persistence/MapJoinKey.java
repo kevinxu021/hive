@@ -29,7 +29,7 @@ import org.apache.hadoop.hive.ql.exec.vector.VectorHashKeyWrapperBatch;
 import org.apache.hadoop.hive.ql.exec.vector.expressions.VectorExpressionWriter;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.serde2.ByteStream.Output;
-import org.apache.hadoop.hive.serde2.SerDe;
+import org.apache.hadoop.hive.serde2.AbstractSerDe;
 import org.apache.hadoop.hive.serde2.SerDeException;
 import org.apache.hadoop.hive.serde2.binarysortable.BinarySortableSerDe;
 import org.apache.hadoop.hive.serde2.lazybinary.LazyBinarySerDe;
@@ -56,7 +56,7 @@ public abstract class MapJoinKey {
   @SuppressWarnings("deprecation")
   public static MapJoinKey read(Output output, MapJoinObjectSerDeContext context,
       Writable writable) throws SerDeException, HiveException {
-    SerDe serde = context.getSerDe();
+    AbstractSerDe serde = context.getSerDe();
     Object obj = serde.deserialize(writable);
     MapJoinKeyObject result = new MapJoinKeyObject();
     result.read(serde.getObjectInspector(), obj);
@@ -93,14 +93,17 @@ public abstract class MapJoinKey {
     return true;
   }
 
-  public static boolean isSupportedField(String typeName) {
-    TypeInfo typeInfo = TypeInfoUtils.getTypeInfoFromTypeString(typeName);
-
+  public static boolean isSupportedField(TypeInfo typeInfo) {
     if (typeInfo.getCategory() != Category.PRIMITIVE) return false; // not supported
     PrimitiveTypeInfo primitiveTypeInfo = (PrimitiveTypeInfo) typeInfo;
     PrimitiveCategory pc = primitiveTypeInfo.getPrimitiveCategory();
     if (!SUPPORTED_PRIMITIVES.contains(pc)) return false; // not supported
     return true;
+  }
+
+  public static boolean isSupportedField(String typeName) {
+    TypeInfo typeInfo = TypeInfoUtils.getTypeInfoFromTypeString(typeName);
+    return isSupportedField(typeInfo);
   }
 
 

@@ -19,7 +19,7 @@ parser grammar IdentifiersParser;
 options
 {
 output=AST;
-ASTLabelType=CommonTree;
+ASTLabelType=ASTNode;
 backtrack=false;
 k=3;
 }
@@ -34,9 +34,6 @@ k=3;
   public void displayRecognitionError(String[] tokenNames,
       RecognitionException e) {
     gParent.errors.add(new ParseError(gParent, e, tokenNames));
-  }
-  protected boolean useSQL11ReservedKeywordsForIdentifier() {
-    return gParent.useSQL11ReservedKeywordsForIdentifier();
   }
 }
 
@@ -53,23 +50,54 @@ groupByClause
 @init { gParent.pushMsg("group by clause", state); }
 @after { gParent.popMsg(state); }
     :
-    KW_GROUP KW_BY
-    expression
-    ( COMMA expression)*
-    ((rollup=KW_WITH KW_ROLLUP) | (cube=KW_WITH KW_CUBE)) ?
-    (sets=KW_GROUPING KW_SETS 
-    LPAREN groupingSetExpression ( COMMA groupingSetExpression)*  RPAREN ) ?
-    -> {rollup != null}? ^(TOK_ROLLUP_GROUPBY expression+)
-    -> {cube != null}? ^(TOK_CUBE_GROUPBY expression+)
-    -> {sets != null}? ^(TOK_GROUPING_SETS expression+ groupingSetExpression+)
-    -> ^(TOK_GROUPBY expression+)
+    KW_GROUP KW_BY groupby_expression
+    -> groupby_expression
     ;
+
+// support for new and old rollup/cube syntax
+groupby_expression :
+ rollupStandard |
+ rollupOldSyntax|
+ groupByEmpty
+;
+
+groupByEmpty
+    :
+    LPAREN RPAREN
+    ;
+
+// standard rollup syntax
+rollupStandard
+@init { gParent.pushMsg("standard rollup syntax", state); }
+@after { gParent.popMsg(state); }
+    :
+    (rollup=KW_ROLLUP | cube=KW_CUBE)
+    LPAREN expression ( COMMA expression)* RPAREN
+    -> {rollup != null}? ^(TOK_ROLLUP_GROUPBY expression+)
+    -> ^(TOK_CUBE_GROUPBY expression+)
+    ;
+
+// old hive rollup syntax
+rollupOldSyntax
+@init { gParent.pushMsg("rollup old syntax", state); }
+@after { gParent.popMsg(state); }
+    :
+    expr=expressionsNotInParenthesis[false]
+    ((rollup=KW_WITH KW_ROLLUP) | (cube=KW_WITH KW_CUBE)) ?
+    (sets=KW_GROUPING KW_SETS
+    LPAREN groupingSetExpression ( COMMA groupingSetExpression)*  RPAREN ) ?
+    -> {rollup != null}? ^(TOK_ROLLUP_GROUPBY {$expr.tree})
+    -> {cube != null}? ^(TOK_CUBE_GROUPBY {$expr.tree})
+    -> {sets != null}? ^(TOK_GROUPING_SETS {$expr.tree} groupingSetExpression+)
+    -> ^(TOK_GROUPBY {$expr.tree})
+    ;
+
 
 groupingSetExpression
 @init {gParent.pushMsg("grouping set expression", state); }
 @after {gParent.popMsg(state); }
    :
-   (LPAREN) => groupingSetExpressionMultiple 
+   (groupingSetExpressionMultiple) => groupingSetExpressionMultiple 
    |
    groupingExpressionSingle
    ;
@@ -105,22 +133,39 @@ havingCondition
     expression
     ;
 
-expressionsInParenthese
+expressionsInParenthesis[boolean isStruct]
     :
-    LPAREN expression (COMMA expression)* RPAREN -> expression+
+    LPAREN! expressionsNotInParenthesis[isStruct] RPAREN!
     ;
 
-expressionsNotInParenthese
+expressionsNotInParenthesis[boolean isStruct]
     :
-    expression (COMMA expression)* -> expression+
+    first=expression more=expressionPart[$expression.tree, isStruct]?
+    -> {more==null}?
+       {$first.tree}
+    -> {$more.tree}
     ;
 
-columnRefOrderInParenthese
+expressionPart[CommonTree t, boolean isStruct]
+    :
+    (COMMA expression)+
+    -> {isStruct}? ^(TOK_FUNCTION Identifier["struct"] {$t} expression+)
+    -> {$t} expression+
+    ;
+
+expressions
+    :
+    (expressionsInParenthesis[false]) => expressionsInParenthesis[false]
+    |
+    expressionsNotInParenthesis[false]
+    ;
+
+columnRefOrderInParenthesis
     :
     LPAREN columnRefOrder (COMMA columnRefOrder)* RPAREN -> columnRefOrder+
     ;
 
-columnRefOrderNotInParenthese
+columnRefOrderNotInParenthesis
     :
     columnRefOrder (COMMA columnRefOrder)* -> columnRefOrder+
     ;
@@ -137,36 +182,21 @@ clusterByClause
 @init { gParent.pushMsg("cluster by clause", state); }
 @after { gParent.popMsg(state); }
     :
-    KW_CLUSTER KW_BY
-    (
-    (LPAREN) => expressionsInParenthese -> ^(TOK_CLUSTERBY expressionsInParenthese)
-    |
-    expressionsNotInParenthese -> ^(TOK_CLUSTERBY expressionsNotInParenthese)
-    )
+    KW_CLUSTER KW_BY expressions -> ^(TOK_CLUSTERBY expressions)
     ;
 
 partitionByClause
 @init  { gParent.pushMsg("partition by clause", state); }
 @after { gParent.popMsg(state); }
     :
-    KW_PARTITION KW_BY
-    (
-    (LPAREN) => expressionsInParenthese -> ^(TOK_DISTRIBUTEBY expressionsInParenthese)
-    |
-    expressionsNotInParenthese -> ^(TOK_DISTRIBUTEBY expressionsNotInParenthese)
-    )
+    KW_PARTITION KW_BY expressions -> ^(TOK_DISTRIBUTEBY expressions) 
     ;
 
 distributeByClause
 @init { gParent.pushMsg("distribute by clause", state); }
 @after { gParent.popMsg(state); }
     :
-    KW_DISTRIBUTE KW_BY
-    (
-    (LPAREN) => expressionsInParenthese -> ^(TOK_DISTRIBUTEBY expressionsInParenthese)
-    |
-    expressionsNotInParenthese -> ^(TOK_DISTRIBUTEBY expressionsNotInParenthese)
-    )
+    KW_DISTRIBUTE KW_BY expressions -> ^(TOK_DISTRIBUTEBY expressions) 
     ;
 
 sortByClause
@@ -175,9 +205,9 @@ sortByClause
     :
     KW_SORT KW_BY
     (
-    (LPAREN) => columnRefOrderInParenthese -> ^(TOK_SORTBY columnRefOrderInParenthese)
+    (LPAREN) => columnRefOrderInParenthesis -> ^(TOK_SORTBY columnRefOrderInParenthesis)
     |
-    columnRefOrderNotInParenthese -> ^(TOK_SORTBY columnRefOrderNotInParenthese)
+    columnRefOrderNotInParenthesis -> ^(TOK_SORTBY columnRefOrderNotInParenthesis)
     )
     ;
 
@@ -190,7 +220,7 @@ function
     LPAREN
       (
         (STAR) => (star=STAR)
-        | (dist=KW_DISTINCT)? (selectExpression (COMMA selectExpression)*)?
+        | (dist=KW_DISTINCT | KW_ALL)? (selectExpression (COMMA selectExpression)*)?
       )
     RPAREN (KW_OVER ws=window_specification)?
            -> {$star != null}? ^(TOK_FUNCTIONSTAR functionName $ws?)
@@ -202,11 +232,9 @@ functionName
 @init { gParent.pushMsg("function name", state); }
 @after { gParent.popMsg(state); }
     : // Keyword IF is also a function name
-    (KW_IF | KW_ARRAY | KW_MAP | KW_STRUCT | KW_UNIONTYPE) => (KW_IF | KW_ARRAY | KW_MAP | KW_STRUCT | KW_UNIONTYPE)
-    | 
-    (functionIdentifier) => functionIdentifier
+    functionIdentifier
     |
-    {!useSQL11ReservedKeywordsForIdentifier()}? sql11ReservedKeywordsUsedAsCastFunctionName -> Identifier[$sql11ReservedKeywordsUsedAsCastFunctionName.start]
+    sql11ReservedKeywordsUsedAsFunctionName -> Identifier[$sql11ReservedKeywordsUsedAsFunctionName.start]
     ;
 
 castExpression
@@ -282,6 +310,7 @@ timeQualifiers
     | KW_MONTH -> Identifier["month"]
     | KW_WEEK -> Identifier["weekofyear"]
     | KW_DAY -> Identifier["day"]
+    | KW_DOW -> Identifier["dayofweek"]
     | KW_HOUR -> Identifier["hour"]
     | KW_MINUTE -> Identifier["minute"]
     | KW_SECOND -> Identifier["second"]
@@ -290,17 +319,18 @@ timeQualifiers
 constant
 @init { gParent.pushMsg("constant", state); }
 @after { gParent.popMsg(state); }
-    :
-    Number
+    : 
+    (intervalLiteral) => intervalLiteral
+    | Number
     | dateLiteral
     | timestampLiteral
-    | intervalLiteral
     | StringLiteral
     | stringLiteralSequence
     | IntegralLiteral
     | NumberLiteral
     | charSetStringLiteral
     | booleanValue
+    | KW_NULL -> TOK_NULL
     ;
 
 stringLiteralSequence
@@ -337,12 +367,27 @@ timestampLiteral
     KW_CURRENT_TIMESTAMP -> ^(TOK_FUNCTION KW_CURRENT_TIMESTAMP)
     ;
 
+intervalValue
+    :
+    StringLiteral | Number
+    ;
+
 intervalLiteral
     :
-    KW_INTERVAL StringLiteral qualifiers=intervalQualifiers ->
-    {
-      adaptor.create(qualifiers.tree.token.getType(), $StringLiteral.text)
-    }
+    value=intervalValue qualifiers=intervalQualifiers
+    -> ^(TOK_FUNCTION Identifier["internal_interval"] NumberLiteral[Integer.toString(((CommonTree)qualifiers.getTree()).token.getType())] $value)
+    ;
+
+intervalExpression
+    :
+    LPAREN value=intervalValue RPAREN qualifiers=intervalQualifiers
+    -> ^(TOK_FUNCTION Identifier["internal_interval"] NumberLiteral[Integer.toString(((CommonTree)qualifiers.getTree()).token.getType())] $value)
+    |
+    KW_INTERVAL value=intervalValue qualifiers=intervalQualifiers
+    -> ^(TOK_FUNCTION Identifier["internal_interval"] NumberLiteral[Integer.toString(((CommonTree)qualifiers.getTree()).token.getType())] $value)
+    |
+    KW_INTERVAL LPAREN expr=expression RPAREN qualifiers=intervalQualifiers
+    -> ^(TOK_FUNCTION Identifier["internal_interval"] NumberLiteral[Integer.toString(((CommonTree)qualifiers.getTree()).token.getType())] $expr)
     ;
 
 intervalQualifiers
@@ -366,18 +411,19 @@ expression
 
 atomExpression
     :
-    (KW_NULL) => KW_NULL -> TOK_NULL
-    | (constant) => constant
+    constant
+    | (intervalExpression) => intervalExpression
     | castExpression
     | extractExpression
     | floorExpression
     | caseExpression
     | whenExpression
-    | (functionName LPAREN) => function
+    | (subQueryExpression)=> (subQueryExpression)
+        -> ^(TOK_SUBQUERY_EXPR TOK_SUBQUERY_OP subQueryExpression)
+    | (function) => function
     | tableOrColumn
-    | LPAREN! expression RPAREN!
+    | expressionsInParenthesis[true]
     ;
-
 
 precedenceFieldExpression
     :
@@ -389,10 +435,13 @@ precedenceUnaryOperator
     PLUS | MINUS | TILDE
     ;
 
-nullCondition
-    :
-    KW_NULL -> ^(TOK_ISNULL)
-    | KW_NOT KW_NULL -> ^(TOK_ISNOTNULL)
+isCondition
+    : KW_NULL -> Identifier["isnull"]
+    | KW_TRUE -> Identifier["istrue"]
+    | KW_FALSE -> Identifier["isfalse"]
+    | KW_NOT KW_NULL -> Identifier["isnotnull"]
+    | KW_NOT KW_TRUE -> Identifier["isnottrue"]
+    | KW_NOT KW_FALSE -> Identifier["isnotfalse"]
     ;
 
 precedenceUnaryPrefixExpression
@@ -401,8 +450,8 @@ precedenceUnaryPrefixExpression
     ;
 
 precedenceUnarySuffixExpression
-    : precedenceUnaryPrefixExpression (a=KW_IS nullCondition)?
-    -> {$a != null}? ^(TOK_FUNCTION nullCondition precedenceUnaryPrefixExpression)
+    : precedenceUnaryPrefixExpression (a=KW_IS isCondition)?
+    -> {$a != null}? ^(TOK_FUNCTION isCondition precedenceUnaryPrefixExpression)
     -> precedenceUnaryPrefixExpression
     ;
 
@@ -439,6 +488,20 @@ precedencePlusExpression
     precedenceStarExpression (precedencePlusOperator^ precedenceStarExpression)*
     ;
 
+precedenceConcatenateOperator
+    :
+    CONCATENATE
+    ;
+
+precedenceConcatenateExpression
+    :
+    (precedencePlusExpression -> precedencePlusExpression)
+        (
+        precedenceConcatenateOperator plus=precedencePlusExpression
+        -> ^(TOK_FUNCTION {adaptor.create(Identifier, "concat")} {$precedenceConcatenateExpression.tree} $plus)
+        )*
+    -> {$precedenceConcatenateExpression.tree}
+    ;
 
 precedenceAmpersandOperator
     :
@@ -447,7 +510,7 @@ precedenceAmpersandOperator
 
 precedenceAmpersandExpression
     :
-    precedencePlusExpression (precedenceAmpersandOperator^ precedencePlusExpression)*
+    precedenceConcatenateExpression (precedenceAmpersandOperator^ precedenceConcatenateExpression)*
     ;
 
 
@@ -462,73 +525,98 @@ precedenceBitwiseOrExpression
     ;
 
 
-// Equal operators supporting NOT prefix
-precedenceEqualNegatableOperator
+precedenceRegexpOperator
     :
     KW_LIKE | KW_RLIKE | KW_REGEXP
     ;
 
-precedenceEqualOperator
+precedenceSimilarOperator
     :
-    precedenceEqualNegatableOperator | EQUAL | EQUAL_NS | NOTEQUAL | LESSTHANOREQUALTO | LESSTHAN | GREATERTHANOREQUALTO | GREATERTHAN
+    precedenceRegexpOperator | LESSTHANOREQUALTO | LESSTHAN | GREATERTHANOREQUALTO | GREATERTHAN
     ;
 
-subQueryExpression 
-    : 
-    LPAREN! selectStatement[true] RPAREN!     
+subQueryExpression
+    :
+    LPAREN! selectStatement RPAREN!
+    ;
+
+precedenceSimilarExpression
+    :
+    precedenceSimilarExpressionMain
+    |
+    KW_EXISTS subQueryExpression -> ^(TOK_SUBQUERY_EXPR ^(TOK_SUBQUERY_OP KW_EXISTS) subQueryExpression)    
+    ;
+
+precedenceSimilarExpressionMain
+    :
+    a=precedenceBitwiseOrExpression part=precedenceSimilarExpressionPart[$precedenceBitwiseOrExpression.tree]?
+    -> {part == null}? {$a.tree}
+    -> {$part.tree}
+    ;
+    
+precedenceSimilarExpressionPart[CommonTree t]
+    :
+    (precedenceSimilarOperator equalExpr=precedenceBitwiseOrExpression)
+    -> ^(precedenceSimilarOperator {$t} $equalExpr)
+    |
+    precedenceSimilarExpressionAtom[$t]
+    |
+    (KW_NOT^ precedenceSimilarExpressionPartNot[$t])
+    ;
+
+precedenceSimilarExpressionAtom[CommonTree t]
+    :
+    KW_IN! precedenceSimilarExpressionIn[$t]
+    |
+    KW_BETWEEN (min=precedenceBitwiseOrExpression) KW_AND (max=precedenceBitwiseOrExpression)
+    -> ^(TOK_FUNCTION Identifier["between"] KW_FALSE {$t} $min $max)
+    |
+    KW_LIKE KW_ANY (expr=expressionsInParenthesis[false])
+    -> ^(TOK_FUNCTION Identifier["likeany"] {$t} {$expr.tree})
+    |
+    KW_LIKE KW_ALL (expr=expressionsInParenthesis[false])
+    -> ^(TOK_FUNCTION Identifier["likeall"] {$t} {$expr.tree})
+    ;
+
+precedenceSimilarExpressionIn[CommonTree t]
+    :
+    (subQueryExpression) => subQueryExpression -> ^(TOK_SUBQUERY_EXPR ^(TOK_SUBQUERY_OP KW_IN) subQueryExpression {$t})
+    |
+    expr=expressionsInParenthesis[false]
+    -> ^(TOK_FUNCTION Identifier["in"] {$t} {$expr.tree})
+    ;
+
+precedenceSimilarExpressionPartNot[CommonTree t]
+    :
+    precedenceRegexpOperator notExpr=precedenceBitwiseOrExpression
+    -> ^(precedenceRegexpOperator {$t} $notExpr)
+    |
+    precedenceSimilarExpressionAtom[$t]
+    ;
+
+precedenceDistinctOperator
+    :
+    KW_IS KW_DISTINCT KW_FROM
+    ;
+
+precedenceEqualOperator
+    :
+    EQUAL | EQUAL_NS | NOTEQUAL | KW_IS KW_NOT KW_DISTINCT KW_FROM -> EQUAL_NS["<=>"]
     ;
 
 precedenceEqualExpression
     :
-    (LPAREN precedenceBitwiseOrExpression COMMA) => precedenceEqualExpressionMutiple
-    |
-    precedenceEqualExpressionSingle
-    ;
-
-precedenceEqualExpressionSingle
-    :
-    (left=precedenceBitwiseOrExpression -> $left)
+    (precedenceSimilarExpression -> precedenceSimilarExpression)
     (
-       (KW_NOT precedenceEqualNegatableOperator notExpr=precedenceBitwiseOrExpression)
-       -> ^(KW_NOT ^(precedenceEqualNegatableOperator $precedenceEqualExpressionSingle $notExpr))
-    | (precedenceEqualOperator equalExpr=precedenceBitwiseOrExpression)
-       -> ^(precedenceEqualOperator $precedenceEqualExpressionSingle $equalExpr)
-    | (KW_NOT KW_IN LPAREN KW_SELECT)=>  (KW_NOT KW_IN subQueryExpression) 
-       -> ^(KW_NOT ^(TOK_SUBQUERY_EXPR ^(TOK_SUBQUERY_OP KW_IN) subQueryExpression $precedenceEqualExpressionSingle))
-    | (KW_NOT KW_IN expressions)
-       -> ^(KW_NOT ^(TOK_FUNCTION KW_IN $precedenceEqualExpressionSingle expressions))
-    | (KW_IN LPAREN KW_SELECT)=>  (KW_IN subQueryExpression) 
-       -> ^(TOK_SUBQUERY_EXPR ^(TOK_SUBQUERY_OP KW_IN) subQueryExpression $precedenceEqualExpressionSingle)
-    | (KW_IN expressions)
-       -> ^(TOK_FUNCTION KW_IN $precedenceEqualExpressionSingle expressions)
-    | ( KW_NOT KW_BETWEEN (min=precedenceBitwiseOrExpression) KW_AND (max=precedenceBitwiseOrExpression) )
-       -> ^(TOK_FUNCTION Identifier["between"] KW_TRUE $left $min $max)
-    | ( KW_BETWEEN (min=precedenceBitwiseOrExpression) KW_AND (max=precedenceBitwiseOrExpression) )
-       -> ^(TOK_FUNCTION Identifier["between"] KW_FALSE $left $min $max)
+        equal=precedenceEqualOperator p=precedenceSimilarExpression
+        -> ^($equal {$precedenceEqualExpression.tree} $p)
+        |
+        dist=precedenceDistinctOperator p=precedenceSimilarExpression
+        -> ^(KW_NOT["not"] ^(EQUAL_NS["<=>"] {$precedenceEqualExpression.tree} $p))
     )*
-    | (KW_EXISTS LPAREN KW_SELECT)=> (KW_EXISTS subQueryExpression) -> ^(TOK_SUBQUERY_EXPR ^(TOK_SUBQUERY_OP KW_EXISTS) subQueryExpression)
+    -> {$precedenceEqualExpression.tree}
     ;
-
-expressions
-    :
-    LPAREN expression (COMMA expression)* RPAREN -> expression+
-    ;
-
-//we transform the (col0, col1) in ((v00,v01),(v10,v11)) into struct(col0, col1) in (struct(v00,v01),struct(v10,v11))
-precedenceEqualExpressionMutiple
-    :
-    (LPAREN precedenceBitwiseOrExpression (COMMA precedenceBitwiseOrExpression)+ RPAREN -> ^(TOK_FUNCTION Identifier["struct"] precedenceBitwiseOrExpression+))
-    ( (KW_IN LPAREN expressionsToStruct (COMMA expressionsToStruct)* RPAREN)
-       -> ^(TOK_FUNCTION KW_IN $precedenceEqualExpressionMutiple expressionsToStruct*)
-    | (KW_NOT KW_IN LPAREN expressionsToStruct (COMMA expressionsToStruct)* RPAREN)
-       -> ^(KW_NOT ^(TOK_FUNCTION KW_IN $precedenceEqualExpressionMutiple expressionsToStruct*)))
-    ;
-
-expressionsToStruct
-    :
-    LPAREN expression (COMMA expression)* RPAREN -> ^(TOK_FUNCTION Identifier["struct"] expression+)
-    ;
-
+    
 precedenceNotOperator
     :
     KW_NOT
@@ -662,9 +750,6 @@ identifier
     :
     Identifier
     | nonReserved -> Identifier[$nonReserved.start]
-    // If it decides to support SQL11 reserved keywords, i.e., useSQL11ReservedKeywordsForIdentifier()=false, 
-    // the sql11keywords in existing q tests will NOT be added back.
-    | {useSQL11ReservedKeywordsForIdentifier()}? sql11ReservedKeywordsUsedAsIdentifier -> Identifier[$sql11ReservedKeywordsUsedAsIdentifier.start]
     ;
 
 functionIdentifier
@@ -683,11 +768,13 @@ principalIdentifier
     | QuotedIdentifier
     ;
 
-//The new version of nonReserved + sql11ReservedKeywordsUsedAsIdentifier = old version of nonReserved
-//Non reserved keywords are basically the keywords that can be used as identifiers.
-//All the KW_* are automatically not only keywords, but also reserved keywords.
-//That means, they can NOT be used as identifiers.
-//If you would like to use them as identifiers, put them in the nonReserved list below.
+// Here is what you have to do if you would like to add a new keyword.
+// Note that non reserved keywords are basically the keywords that can be used as identifiers.
+// (1) Add a new entry to HiveLexer, e.g., KW_TRUE : 'TRUE';
+// (2) If it is reserved, you do NOT need to change IdentifiersParser.g 
+//                        because all the KW_* are automatically not only keywords, but also reserved keywords.
+//                        However, you need to add a test to TestSQL11ReservedKeyWordsNegative.java.
+//     Otherwise it is non-reserved, you need to put them in the nonReserved list below.
 //If you are not sure, please refer to the SQL2011 column in
 //http://www.postgresql.org/docs/9.5/static/sql-keywords-appendix.html
 nonReserved
@@ -696,12 +783,12 @@ nonReserved
     | KW_CASCADE | KW_CHANGE | KW_CLUSTER | KW_CLUSTERED | KW_CLUSTERSTATUS | KW_COLLECTION | KW_COLUMNS
     | KW_COMMENT | KW_COMPACT | KW_COMPACTIONS | KW_COMPUTE | KW_CONCATENATE | KW_CONTINUE | KW_DATA | KW_DAY
     | KW_DATABASES | KW_DATETIME | KW_DBPROPERTIES | KW_DEFERRED | KW_DEFINED | KW_DELIMITED | KW_DEPENDENCY 
-    | KW_DESC | KW_DIRECTORIES | KW_DIRECTORY | KW_DISABLE | KW_DISTRIBUTE | KW_ELEM_TYPE 
+    | KW_DESC | KW_DIRECTORIES | KW_DIRECTORY | KW_DISABLE | KW_DISTRIBUTE | KW_DOW | KW_ELEM_TYPE 
     | KW_ENABLE | KW_ESCAPED | KW_EXCLUSIVE | KW_EXPLAIN | KW_EXPORT | KW_FIELDS | KW_FILE | KW_FILEFORMAT
     | KW_FIRST | KW_FORMAT | KW_FORMATTED | KW_FUNCTIONS | KW_HOLD_DDLTIME | KW_HOUR | KW_IDXPROPERTIES | KW_IGNORE
     | KW_INDEX | KW_INDEXES | KW_INPATH | KW_INPUTDRIVER | KW_INPUTFORMAT | KW_ITEMS | KW_JAR
     | KW_KEYS | KW_KEY_TYPE | KW_LAST | KW_LIMIT | KW_OFFSET | KW_LINES | KW_LOAD | KW_LOCATION | KW_LOCK | KW_LOCKS | KW_LOGICAL | KW_LONG
-    | KW_MAPJOIN | KW_MATERIALIZED | KW_METADATA | KW_MINUS | KW_MINUTE | KW_MONTH | KW_MSCK | KW_NOSCAN | KW_NO_DROP | KW_NULLS | KW_OFFLINE
+    | KW_MAPJOIN | KW_MATERIALIZED | KW_METADATA | KW_MINUTE | KW_MONTH | KW_MSCK | KW_NOSCAN | KW_NO_DROP | KW_NULLS | KW_OFFLINE
     | KW_OPTION | KW_OUTPUTDRIVER | KW_OUTPUTFORMAT | KW_OVERWRITE | KW_OWNER | KW_PARTITIONED | KW_PARTITIONS | KW_PLUS | KW_PRETTY
     | KW_PRINCIPALS | KW_PROTECTION | KW_PURGE | KW_QUARTER | KW_READ | KW_READONLY | KW_REBUILD | KW_RECORDREADER | KW_RECORDWRITER
     | KW_RELOAD | KW_RENAME | KW_REPAIR | KW_REPLACE | KW_REPLICATION | KW_RESTRICT | KW_REWRITE
@@ -722,32 +809,22 @@ nonReserved
     | KW_VALIDATE
     | KW_NOVALIDATE
     | KW_KEY
+    | KW_MATCHED
+    | KW_REPL | KW_DUMP | KW_BATCH | KW_STATUS
+    | KW_CACHE | KW_DAYOFWEEK | KW_VIEWS
+    | KW_VECTORIZATION
+    | KW_SUMMARY
+    | KW_OPERATOR
+    | KW_EXPRESSION
+    | KW_DETAIL
+    | KW_WAIT
+    | KW_ZONE
+    | KW_TIMESTAMPTZ
+
 ;
 
-//The following SQL2011 reserved keywords are used as cast function name only, but not as identifiers.
-sql11ReservedKeywordsUsedAsCastFunctionName
+//The following SQL2011 reserved keywords are used as function name only, but not as identifiers.
+sql11ReservedKeywordsUsedAsFunctionName
     :
-    KW_BIGINT | KW_BINARY | KW_BOOLEAN | KW_CURRENT_DATE | KW_CURRENT_TIMESTAMP | KW_DATE | KW_DOUBLE | KW_FLOAT | KW_INT | KW_SMALLINT | KW_TIMESTAMP
-    ;
-
-//The following SQL2011 reserved keywords are used as identifiers in many q tests, they may be added back due to backward compatibility.
-//We are planning to remove the following whole list after several releases.
-//Thus, please do not change the following list unless you know what to do.
-sql11ReservedKeywordsUsedAsIdentifier
-    :
-    KW_ALL | KW_ALTER | KW_ARRAY | KW_AS | KW_AUTHORIZATION | KW_BETWEEN | KW_BIGINT | KW_BINARY | KW_BOOLEAN 
-    | KW_BOTH | KW_BY | KW_CREATE | KW_CUBE | KW_CURRENT_DATE | KW_CURRENT_TIMESTAMP | KW_CURSOR | KW_DATE | KW_DECIMAL | KW_DELETE | KW_DESCRIBE 
-    | KW_DOUBLE | KW_DROP | KW_EXISTS | KW_EXTERNAL | KW_FALSE | KW_FETCH | KW_FLOAT | KW_FOR | KW_FULL | KW_GRANT 
-    | KW_GROUP | KW_GROUPING | KW_IMPORT | KW_IN | KW_INNER | KW_INSERT | KW_INT | KW_INTERSECT | KW_INTO | KW_IS | KW_LATERAL 
-    | KW_LEFT | KW_LIKE | KW_LOCAL | KW_NONE | KW_NULL | KW_OF | KW_ORDER | KW_OUT | KW_OUTER | KW_PARTITION 
-    | KW_PERCENT | KW_PROCEDURE | KW_RANGE | KW_READS | KW_REVOKE | KW_RIGHT 
-    | KW_ROLLUP | KW_ROW | KW_ROWS | KW_SET | KW_SMALLINT | KW_TABLE | KW_TIMESTAMP | KW_TO | KW_TRIGGER | KW_TRUE 
-    | KW_TRUNCATE | KW_UNION | KW_UPDATE | KW_USER | KW_USING | KW_VALUES | KW_WITH 
-//The following two keywords come from MySQL. Although they are not keywords in SQL2011, they are reserved keywords in MySQL.    
-    | KW_REGEXP | KW_RLIKE 
-    | KW_PRIMARY
-    | KW_FOREIGN
-    | KW_CONSTRAINT
-    | KW_REFERENCES
-    | KW_PRECISION
+    KW_IF | KW_ARRAY | KW_MAP | KW_BIGINT | KW_BINARY | KW_BOOLEAN | KW_CURRENT_DATE | KW_CURRENT_TIMESTAMP | KW_DATE | KW_DOUBLE | KW_FLOAT | KW_GROUPING | KW_INT | KW_SMALLINT | KW_TIMESTAMP
     ;

@@ -69,6 +69,27 @@ struct SQLForeignKey {
   14: bool rely_cstr       // Rely/No Rely
 }
 
+struct SQLUniqueConstraint {
+  1: string table_db,    // table schema
+  2: string table_name,  // table name
+  3: string column_name, // column name
+  4: i32 key_seq,        // sequence number within unique constraint
+  5: string uk_name,     // unique key name
+  6: bool enable_cstr,   // Enable/Disable
+  7: bool validate_cstr, // Validate/No validate
+  8: bool rely_cstr      // Rely/No Rely
+}
+
+struct SQLNotNullConstraint {
+  1: string table_db,    // table schema
+  2: string table_name,  // table name
+  3: string column_name, // column name
+  4: string nn_name,     // not null name
+  5: bool enable_cstr,   // Enable/Disable
+  6: bool validate_cstr, // Validate/No validate
+  7: bool rely_cstr      // Rely/No Rely
+}
+
 struct Type {
   1: string          name,             // one of the types in PrimitiveTypes or CollectionTypes or User defined types
   2: optional string type1,            // object type if the name is 'list' (LIST_TYPE), key type if the name is 'map' (MAP_TYPE)
@@ -150,7 +171,6 @@ enum EventRequestType {
     UPDATE = 2,
     DELETE = 3,
 }
-
 
 struct HiveObjectRef{
   1: HiveObjectType objectType,
@@ -303,9 +323,10 @@ struct Table {
   9: map<string, string> parameters,   // to store comments or any other user level parameters
   10: string viewOriginalText,         // original view text, null for non-view
   11: string viewExpandedText,         // expanded view text, null for non-view
-  12: string tableType,                 // table type enum, e.g. EXTERNAL_TABLE
+  12: string tableType,                // table type enum, e.g. EXTERNAL_TABLE
   13: optional PrincipalPrivilegeSet privileges,
-  14: optional bool temporary=false
+  14: optional bool temporary=false,
+  15: optional bool rewriteEnabled     // rewrite enabled or not
 }
 
 struct Partition {
@@ -497,6 +518,24 @@ struct ForeignKeysResponse {
   1: required list<SQLForeignKey> foreignKeys
 }
 
+struct UniqueConstraintsRequest {
+  1: required string db_name,
+  2: required string tbl_name
+}
+
+struct UniqueConstraintsResponse {
+  1: required list<SQLUniqueConstraint> uniqueConstraints
+}
+
+struct NotNullConstraintsRequest {
+  1: required string db_name,
+  2: required string tbl_name
+}
+
+struct NotNullConstraintsResponse {
+  1: required list<SQLNotNullConstraint> notNullConstraints
+}
+
 struct DropConstraintRequest {
   1: required string dbname, 
   2: required string tablename,
@@ -509,6 +548,14 @@ struct AddPrimaryKeyRequest {
 
 struct AddForeignKeyRequest {
   1: required list<SQLForeignKey> foreignKeyCols
+}
+
+struct AddUniqueConstraintRequest {
+  1: required list<SQLUniqueConstraint> uniqueConstraintCols
+}
+
+struct AddNotNullConstraintRequest {
+  1: required list<SQLNotNullConstraint> notNullConstraintCols
 }
 
 // Return type for get_partitions_by_expr
@@ -625,6 +672,8 @@ struct TxnInfo {
     5: optional string agentInfo = "Unknown",
     6: optional i32 heartbeatCount=0,
     7: optional string metaInfo,
+    8: optional i64 startedTime,
+    9: optional i64 lastHeartbeatTime,
 }
 
 struct GetOpenTxnsInfoResponse {
@@ -634,8 +683,9 @@ struct GetOpenTxnsInfoResponse {
 
 struct GetOpenTxnsResponse {
     1: required i64 txn_high_water_mark,
-    2: required set<i64> open_txns,
+    2: required list<i64> open_txns,  // set<i64> changed to list<i64> since 3.0
     3: optional i64 min_open_txn, //since 1.3,2.2
+    4: required binary abortedBits,   // since 3.0
 }
 
 struct OpenTxnRequest {
@@ -668,7 +718,8 @@ struct LockComponent {
     4: optional string tablename,
     5: optional string partitionname,
     6: optional DataOperationType operationType = DataOperationType.UNSET,
-    7: optional bool isAcid = false
+    7: optional bool isAcid = false,
+    8: optional bool isDynamicPartitionWrite = false
 }
 
 struct LockRequest {
@@ -748,6 +799,12 @@ struct CompactionRequest {
     6: optional map<string, string> properties
 }
 
+struct CompactionResponse {
+    1: required i64 id,
+    2: required string state,
+    3: required bool accepted
+}
+
 struct ShowCompactRequest {
 }
 
@@ -764,6 +821,7 @@ struct ShowCompactResponseElement {
     10: optional string metaInfo,
     11: optional i64 endTime,
     12: optional string hadoopJobId = "None",
+    13: optional i64 id,
 }
 
 struct ShowCompactResponse {
@@ -790,6 +848,7 @@ struct NotificationEvent {
     4: optional string dbName,
     5: optional string tableName,
     6: required string message,
+    7: optional string messageFormat,
 }
 
 struct NotificationEventResponse {
@@ -801,7 +860,10 @@ struct CurrentNotificationEventId {
 }
 
 struct InsertEventRequestData {
-    1: required list<string> filesAdded
+    1: optional bool replace,
+    2: required list<string> filesAdded,
+    // Checksum of files (hex string of checksum byte payload)
+    3: optional list<string> filesAddedChecksum,
 }
 
 union FireEventRequestData {
@@ -892,6 +954,45 @@ struct CacheFileMetadataRequest {
 
 struct GetAllFunctionsResponse {
   1: optional list<Function> functions
+}
+
+enum ClientCapability {
+  TEST_CAPABILITY = 1
+}
+
+
+struct ClientCapabilities {
+  1: required list<ClientCapability> values
+}
+
+struct GetTableRequest {
+  1: required string dbName,
+  2: required string tblName,
+  3: optional ClientCapabilities capabilities
+}
+
+struct GetTableResult {
+  1: required Table table
+}
+
+struct GetTablesRequest {
+  1: required string dbName,
+  2: optional list<string> tblNames,
+  3: optional ClientCapabilities capabilities
+}
+
+struct GetTablesResult {
+  1: required list<Table> tables
+}
+
+// Request type for cm_recycle
+struct CmRecycleRequest {
+  1: required string dataPath,
+  2: required bool purge
+}
+
+// Response type for cm_recycle
+struct CmRecycleResponse {
 }
 
 struct TableMeta {
@@ -1011,7 +1112,8 @@ service ThriftHiveMetastore extends fb303.FacebookService
       throws (1:AlreadyExistsException o1,
               2:InvalidObjectException o2, 3:MetaException o3,
               4:NoSuchObjectException o4)
-  void create_table_with_constraints(1:Table tbl, 2: list<SQLPrimaryKey> primaryKeys, 3: list<SQLForeignKey> foreignKeys)
+  void create_table_with_constraints(1:Table tbl, 2: list<SQLPrimaryKey> primaryKeys, 3: list<SQLForeignKey> foreignKeys,
+  4: list<SQLUniqueConstraint> uniqueConstraints, 5: list<SQLNotNullConstraint> notNullConstraints)
       throws (1:AlreadyExistsException o1,
               2:InvalidObjectException o2, 3:MetaException o3,
               4:NoSuchObjectException o4)
@@ -1021,6 +1123,10 @@ service ThriftHiveMetastore extends fb303.FacebookService
       throws(1:NoSuchObjectException o1, 2:MetaException o2)
   void add_foreign_key(1:AddForeignKeyRequest req)
       throws(1:NoSuchObjectException o1, 2:MetaException o2)  
+  void add_unique_constraint(1:AddUniqueConstraintRequest req)
+      throws(1:NoSuchObjectException o1, 2:MetaException o2)
+  void add_not_null_constraint(1:AddNotNullConstraintRequest req)
+      throws(1:NoSuchObjectException o1, 2:MetaException o2)
 
   // drops the table and all the partitions associated with it if the table has partitions
   // delete data (including partitions) if deleteData is set to true
@@ -1029,7 +1135,10 @@ service ThriftHiveMetastore extends fb303.FacebookService
   void drop_table_with_environment_context(1:string dbname, 2:string name, 3:bool deleteData,
       4:EnvironmentContext environment_context)
                        throws(1:NoSuchObjectException o1, 2:MetaException o3)
+  void truncate_table(1:string dbName, 2:string tableName, 3:list<string> partNames)
+                          throws(1:MetaException o1)
   list<string> get_tables(1: string db_name, 2: string pattern) throws (1: MetaException o1)
+  list<string> get_tables_by_type(1: string db_name, 2: string pattern, 3: string tableType) throws (1: MetaException o1)
   list<TableMeta> get_table_meta(1: string db_patterns, 2: string tbl_patterns, 3: list<string> tbl_types)
                        throws (1: MetaException o1)
   list<string> get_all_tables(1: string db_name) throws (1: MetaException o1)
@@ -1037,6 +1146,8 @@ service ThriftHiveMetastore extends fb303.FacebookService
   Table get_table(1:string dbname, 2:string tbl_name)
                        throws (1:MetaException o1, 2:NoSuchObjectException o2)
   list<Table> get_table_objects_by_name(1:string dbname, 2:list<string> tbl_names)
+  GetTableResult get_table_req(1:GetTableRequest req) throws (1:MetaException o1, 2:NoSuchObjectException o2)
+  GetTablesResult get_table_objects_by_name_req(1:GetTablesRequest req)
 				   throws (1:MetaException o1, 2:InvalidOperationException o2, 3:UnknownDBException o3)
 
   // Get a list of table names that match a filter.
@@ -1261,10 +1372,15 @@ service ThriftHiveMetastore extends fb303.FacebookService
   list<string> get_index_names(1:string db_name, 2:string tbl_name, 3:i16 max_indexes=-1)
                        throws(1:MetaException o2)
 
- //primary keys and foreign keys
+  //primary keys and foreign keys
   PrimaryKeysResponse get_primary_keys(1:PrimaryKeysRequest request)
                        throws(1:MetaException o1, 2:NoSuchObjectException o2)
   ForeignKeysResponse get_foreign_keys(1:ForeignKeysRequest request)
+                       throws(1:MetaException o1, 2:NoSuchObjectException o2)
+  // other constraints
+  UniqueConstraintsResponse get_unique_constraints(1:UniqueConstraintsRequest request)
+                       throws(1:MetaException o1, 2:NoSuchObjectException o2)
+  NotNullConstraintsResponse get_not_null_constraints(1:NotNullConstraintsRequest request)
                        throws(1:MetaException o1, 2:NoSuchObjectException o2)
 
   // column statistics interfaces
@@ -1423,6 +1539,7 @@ service ThriftHiveMetastore extends fb303.FacebookService
   void heartbeat(1:HeartbeatRequest ids) throws (1:NoSuchLockException o1, 2:NoSuchTxnException o2, 3:TxnAbortedException o3)
   HeartbeatTxnRangeResponse heartbeat_txn_range(1:HeartbeatTxnRangeRequest txns)
   void compact(1:CompactionRequest rqst) 
+  CompactionResponse compact2(1:CompactionRequest rqst) 
   ShowCompactResponse show_compact(1:ShowCompactRequest rqst)
   void add_dynamic_partitions(1:AddDynamicPartitions rqst) throws (1:NoSuchTxnException o1, 2:TxnAbortedException o2)
 
@@ -1432,12 +1549,17 @@ service ThriftHiveMetastore extends fb303.FacebookService
   FireEventResponse fire_listener_event(1:FireEventRequest rqst)
   void flushCache()
 
+  // Repl Change Management api
+  CmRecycleResponse cm_recycle(1:CmRecycleRequest request) throws(1:MetaException o1)
+
   GetFileMetadataByExprResult get_file_metadata_by_expr(1:GetFileMetadataByExprRequest req)
   GetFileMetadataResult get_file_metadata(1:GetFileMetadataRequest req)
   PutFileMetadataResult put_file_metadata(1:PutFileMetadataRequest req)
   ClearFileMetadataResult clear_file_metadata(1:ClearFileMetadataRequest req)
   CacheFileMetadataResult cache_file_metadata(1:CacheFileMetadataRequest req)
 
+  // Metastore DB properties
+  string get_metastore_db_uuid() throws (1:MetaException o1)
 }
 
 // * Note about the DDL_TIME: When creating or altering a table or a partition,

@@ -21,6 +21,7 @@ package org.apache.hadoop.hive.ql.io;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -42,10 +43,13 @@ import org.apache.hadoop.hive.ql.metadata.Table;
 import org.apache.hadoop.hive.shims.HadoopShims;
 import org.apache.hadoop.hive.shims.HadoopShims.HdfsFileStatusWithId;
 import org.apache.hadoop.hive.shims.ShimLoader;
+import org.apache.hive.common.util.Ref;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.google.common.annotations.VisibleForTesting;
+
+import static org.apache.hadoop.hive.ql.exec.Utilities.COPY_KEYWORD;
 
 /**
  * Utilities that are shared by all of the ACID input and output formats. They
@@ -98,6 +102,10 @@ public class AcidUtils {
   public static final int MAX_STATEMENTS_PER_TXN = 10000;
   public static final Pattern BUCKET_DIGIT_PATTERN = Pattern.compile("[0-9]{5}$");
   public static final Pattern   LEGACY_BUCKET_DIGIT_PATTERN = Pattern.compile("^[0-9]{6}");
+  /**
+   * This does not need to use ORIGINAL_PATTERN_COPY because it's used to read
+   * a "delta" dir written by a real Acid write - cannot have any copies
+   */
   public static final PathFilter originalBucketFilter = new PathFilter() {
     @Override
     public boolean accept(Path path) {
@@ -112,6 +120,11 @@ public class AcidUtils {
 
   private static final Pattern ORIGINAL_PATTERN =
       Pattern.compile("[0-9]+_[0-9]+");
+  /**
+   * @see org.apache.hadoop.hive.ql.exec.Utilities#COPY_KEYWORD
+   */
+  private static final Pattern ORIGINAL_PATTERN_COPY =
+    Pattern.compile("[0-9]+_[0-9]+" + COPY_KEYWORD + "[0-9]+");
 
   public static final PathFilter hiddenFileFilter = new PathFilter(){
     @Override
@@ -183,7 +196,7 @@ public class AcidUtils {
     String subdir;
     if (options.getOldStyle()) {
       return new Path(directory, String.format(LEGACY_FILE_BUCKET_DIGITS,
-          options.getBucket()) + "_0");
+          options.getBucketId()) + "_0");
     } else if (options.isWritingBase()) {
       subdir = BASE_PREFIX + String.format(DELTA_DIGITS,
           options.getMaximumTransactionId());
@@ -204,7 +217,7 @@ public class AcidUtils {
                         options.getMaximumTransactionId(),
                         options.getStatementId());
     }
-    return createBucketFile(new Path(directory, subdir), options.getBucket());
+    return createBucketFile(new Path(directory, subdir), options.getBucketId());
   }
 
   /**
@@ -242,7 +255,21 @@ public class AcidUtils {
           .maximumTransactionId(0)
           .bucket(bucket)
           .writingBase(true);
-    } else if (filename.startsWith(BUCKET_PREFIX)) {
+    }
+    else if(ORIGINAL_PATTERN_COPY.matcher(filename).matches()) {
+      //todo: define groups in regex and use parseInt(Matcher.group(2))....
+      int bucket =
+        Integer.parseInt(filename.substring(0, filename.indexOf('_')));
+      int copyNumber = Integer.parseInt(filename.substring(filename.lastIndexOf('_') + 1));
+      result
+        .setOldStyle(true)
+        .minimumTransactionId(0)
+        .maximumTransactionId(0)
+        .bucket(bucket)
+        .copyNumber(copyNumber)
+        .writingBase(true);
+    }
+    else if (filename.startsWith(BUCKET_PREFIX)) {
       int bucket =
           Integer.parseInt(filename.substring(filename.indexOf('_') + 1));
       if (bucketFile.getParent().getName().startsWith(BASE_PREFIX)) {
@@ -481,7 +508,7 @@ public class AcidUtils {
     Path getBaseDirectory();
 
     /**
-     * Get the list of original files.  Not {@code null}.
+     * Get the list of original files.  Not {@code null}.  Must be sorted.
      * @return the list of original files (eg. 000000_0)
      */
     List<HdfsFileStatusWithId> getOriginalFiles();
@@ -763,6 +790,15 @@ public class AcidUtils {
                                        boolean useFileIds,
                                        boolean ignoreEmptyFiles
                                        ) throws IOException {
+    return getAcidState(directory, conf, txnList, Ref.from(useFileIds), ignoreEmptyFiles);
+  }
+
+  public static Directory getAcidState(Path directory,
+                                       Configuration conf,
+                                       ValidTxnList txnList,
+                                       Ref<Boolean> useFileIds,
+                                       boolean ignoreEmptyFiles
+                                       ) throws IOException {
     FileSystem fs = directory.getFileSystem(conf);
     // The following 'deltas' includes all kinds of delta files including insert & delete deltas.
     final List<ParsedDelta> deltas = new ArrayList<ParsedDelta>();
@@ -770,12 +806,18 @@ public class AcidUtils {
     List<FileStatus> originalDirectories = new ArrayList<FileStatus>();
     final List<FileStatus> obsolete = new ArrayList<FileStatus>();
     List<HdfsFileStatusWithId> childrenWithId = null;
-    if (useFileIds) {
+    Boolean val = useFileIds.value;
+    if (val == null || val) {
       try {
         childrenWithId = SHIMS.listLocatedHdfsStatus(fs, directory, hiddenFileFilter);
+        if (val == null) {
+          useFileIds.value = true;
+        }
       } catch (Throwable t) {
         LOG.error("Failed to get files with ID; using regular API: " + t.getMessage());
-        useFileIds = false;
+        if (val == null && t instanceof UnsupportedOperationException) {
+          useFileIds.value = false;
+        }
       }
     }
     TxnBase bestBase = new TxnBase();
@@ -809,7 +851,7 @@ public class AcidUtils {
       // Okay, we're going to need these originals.  Recurse through them and figure out what we
       // really need.
       for (FileStatus origDir : originalDirectories) {
-        findOriginals(fs, origDir, original, useFileIds);
+        findOriginals(fs, origDir, original, useFileIds, ignoreEmptyFiles);
       }
     }
 
@@ -866,7 +908,6 @@ public class AcidUtils {
        * {@link txnList}.  Note that 'original' files are logically a base_Long.MIN_VALUE and thus
        * cannot have any data for an open txn.  We could check {@link deltas} has files to cover
        * [1,n] w/o gaps but this would almost never happen...*/
-      //todo: this should only care about 'open' tnxs (HIVE-14211)
       long[] exceptions = txnList.getInvalidTransactions();
       String minOpenTxn = exceptions != null && exceptions.length > 0 ?
         Long.toString(exceptions[0]) : "x";
@@ -878,7 +919,17 @@ public class AcidUtils {
     final Path base = bestBase.status == null ? null : bestBase.status.getPath();
     LOG.debug("in directory " + directory.toUri().toString() + " base = " + base + " deltas = " +
         deltas.size());
-
+    /**
+     * If this sort order is changed and there are tables that have been converted to transactional
+     * and have had any update/delete/merge operations performed but not yet MAJOR compacted, it
+     * may result in data loss since it may change how
+     * {@link org.apache.hadoop.hive.ql.io.orc.OrcRawRecordMerger.OriginalReaderPair} assigns 
+     * {@link RecordIdentifier#rowId} for read (that have happened) and compaction (yet to happen).
+     */
+    Collections.sort(original, (HdfsFileStatusWithId o1, HdfsFileStatusWithId o2) -> {
+      //this does "Path.uri.compareTo(that.uri)"
+      return o1.getFileStatus().compareTo(o2.getFileStatus());
+    });
     return new Directory(){
 
       @Override
@@ -910,11 +961,6 @@ public class AcidUtils {
    * files within the snapshot.
    */
   private static boolean isValidBase(long baseTxnId, ValidTxnList txnList) {
-    /*This implementation is suboptimal.  It considers open/aborted txns invalid while we are only
-    * concerned with 'open' ones.  (Compaction removes any data that belongs to aborted txns and
-    * reads skip anything that belongs to aborted txn, thus base_7 is still OK if the only exception
-    * is txn 5 which is aborted).  So this implementation can generate false positives. (HIVE-14211)
-    * */
     if(baseTxnId == Long.MIN_VALUE) {
       //such base is created by 1st compaction in case of non-acid to acid table conversion
       //By definition there are no open txns with id < 1.
@@ -1001,32 +1047,42 @@ public class AcidUtils {
    * @throws IOException
    */
   private static void findOriginals(FileSystem fs, FileStatus stat,
-      List<HdfsFileStatusWithId> original, boolean useFileIds) throws IOException {
+      List<HdfsFileStatusWithId> original, Ref<Boolean> useFileIds, boolean ignoreEmptyFiles) throws IOException {
     assert stat.isDir();
     List<HdfsFileStatusWithId> childrenWithId = null;
-    if (useFileIds) {
+    Boolean val = useFileIds.value;
+    if (val == null || val) {
       try {
         childrenWithId = SHIMS.listLocatedHdfsStatus(fs, stat.getPath(), hiddenFileFilter);
+        if (val == null) {
+          useFileIds.value = true;
+        }
       } catch (Throwable t) {
         LOG.error("Failed to get files with ID; using regular API: " + t.getMessage());
-        useFileIds = false;
+        if (val == null && t instanceof UnsupportedOperationException) {
+          useFileIds.value = false;
+        }
       }
     }
     if (childrenWithId != null) {
       for (HdfsFileStatusWithId child : childrenWithId) {
         if (child.getFileStatus().isDir()) {
-          findOriginals(fs, child.getFileStatus(), original, useFileIds);
+          findOriginals(fs, child.getFileStatus(), original, useFileIds, ignoreEmptyFiles);
         } else {
-          original.add(child);
+          if(!ignoreEmptyFiles || child.getFileStatus().getLen() > 0) {
+            original.add(child);
+          }
         }
       }
     } else {
       List<FileStatus> children = HdfsUtils.listLocatedStatus(fs, stat.getPath(), hiddenFileFilter);
       for (FileStatus child : children) {
         if (child.isDir()) {
-          findOriginals(fs, child, original, useFileIds);
+          findOriginals(fs, child, original, useFileIds, ignoreEmptyFiles);
         } else {
-          original.add(createOriginalObj(null, child));
+          if(!ignoreEmptyFiles || child.getLen() > 0) {
+            original.add(createOriginalObj(null, child));
+          }
         }
       }
     }

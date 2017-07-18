@@ -61,6 +61,10 @@ import org.apache.hadoop.hive.metastore.api.PrivilegeGrantInfo;
 import org.apache.hadoop.hive.metastore.api.ResourceType;
 import org.apache.hadoop.hive.metastore.api.ResourceUri;
 import org.apache.hadoop.hive.metastore.api.Role;
+import org.apache.hadoop.hive.metastore.api.SQLForeignKey;
+import org.apache.hadoop.hive.metastore.api.SQLNotNullConstraint;
+import org.apache.hadoop.hive.metastore.api.SQLPrimaryKey;
+import org.apache.hadoop.hive.metastore.api.SQLUniqueConstraint;
 import org.apache.hadoop.hive.metastore.api.SerDeInfo;
 import org.apache.hadoop.hive.metastore.api.SkewedInfo;
 import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
@@ -360,6 +364,7 @@ public class HBaseUtils {
     return result;
   }
 
+
   /**
    * Deserialize a database.  This method should be used when the db anme is already known as it
    * doesn't have to re-deserialize it.
@@ -615,7 +620,7 @@ public class HBaseUtils {
    * @param md message descriptor to use to generate the hash
    * @return the hash as a byte array
    */
-  static byte[] hashStorageDescriptor(StorageDescriptor sd, MessageDigest md)  {
+  public static byte[] hashStorageDescriptor(StorageDescriptor sd, MessageDigest md)  {
     // Note all maps and lists have to be absolutely sorted.  Otherwise we'll produce different
     // results for hashes based on the OS or JVM being used.
     md.reset();
@@ -649,7 +654,7 @@ public class HBaseUtils {
       }
     }
     if (sd.getBucketCols() != null) {
-      SortedSet<String> bucketCols = new TreeSet<>(sd.getBucketCols());
+      List<String> bucketCols = new ArrayList<>(sd.getBucketCols());
       for (String bucket : bucketCols) md.update(bucket.getBytes(ENCODING));
     }
     if (sd.getSortCols() != null) {
@@ -684,6 +689,7 @@ public class HBaseUtils {
           md.update(e.getValue().getBytes(ENCODING));
         }
       }
+      md.update(sd.isStoredAsSubDirectories() ? "true".getBytes(ENCODING) : "false".getBytes(ENCODING));
     }
 
     return md.digest();
@@ -951,9 +957,9 @@ public class HBaseUtils {
 
   private static List<String> desierliazeDbNameTableNameFromPartitionKey(byte[] key,
                                                                          Configuration conf) {
-    StringBuffer names = new StringBuffer();
+    StringBuilder names = new StringBuilder();
     names.append("dbName,tableName,");
-    StringBuffer types = new StringBuffer();
+    StringBuilder types = new StringBuilder();
     types.append("string,string,");
     BinarySortableSerDe serDe = new BinarySortableSerDe();
     Properties props = new Properties();
@@ -985,9 +991,9 @@ public class HBaseUtils {
   // Deserialize a partition key and return _only_ the partition values.
   private static List<String> deserializePartitionKey(List<FieldSchema> partitions, byte[] key,
       Configuration conf) {
-    StringBuffer names = new StringBuffer();
+    StringBuilder names = new StringBuilder();
     names.append("dbName,tableName,");
-    StringBuffer types = new StringBuffer();
+    StringBuilder types = new StringBuilder();
     types.append("string,string,");
     for (int i=0;i<partitions.size();i++) {
       names.append(partitions.get(i).getName());
@@ -1058,6 +1064,7 @@ public class HBaseUtils {
     if (table.getViewExpandedText() != null) {
       builder.setViewExpandedText(table.getViewExpandedText());
     }
+    builder.setIsRewriteEnabled(table.isRewriteEnabled());
     if (table.getTableType() != null) builder.setTableType(table.getTableType());
     if (table.getPrivileges() != null) {
       builder.setPrivileges(buildPrincipalPrivilegeSet(table.getPrivileges()));
@@ -1111,6 +1118,7 @@ public class HBaseUtils {
     table.setParameters(buildParameters(proto.getParameters()));
     if (proto.hasViewOriginalText()) table.setViewOriginalText(proto.getViewOriginalText());
     if (proto.hasViewExpandedText()) table.setViewExpandedText(proto.getViewExpandedText());
+    table.setRewriteEnabled(proto.getIsRewriteEnabled());
     table.setTableType(proto.getTableType());
     if (proto.hasPrivileges()) {
       table.setPrivileges(buildPrincipalPrivilegeSet(proto.getPrivileges()));
@@ -1492,6 +1500,251 @@ public class HBaseUtils {
   static String deserializeMasterKey(byte[] value) throws InvalidProtocolBufferException {
     HbaseMetastoreProto.MasterKey protoKey = HbaseMetastoreProto.MasterKey.parseFrom(value);
     return protoKey.getMasterKey();
+  }
+
+  /**
+   * Serialize the primary key for a table.
+   * @param pk Primary key columns.  It is expected that all of these match to one pk, since
+   *           anything else is meaningless.
+   * @return two byte arrays, first containts the hbase key, the second the serialized value.
+   */
+  static byte[][] serializePrimaryKey(List<SQLPrimaryKey> pk) {
+    // First, figure out the dbName and tableName.  We expect this to match for all list entries.
+    byte[][] result = new byte[2][];
+    String dbName = pk.get(0).getTable_db();
+    String tableName = pk.get(0).getTable_name();
+    result[0] = buildKey(HiveStringUtils.normalizeIdentifier(dbName),
+        HiveStringUtils.normalizeIdentifier(tableName));
+
+    HbaseMetastoreProto.PrimaryKey.Builder builder = HbaseMetastoreProto.PrimaryKey.newBuilder();
+    // Encode the primary key, if present
+    builder.setPkName(pk.get(0).getPk_name());
+    builder.setEnableConstraint(pk.get(0).isEnable_cstr());
+    builder.setValidateConstraint(pk.get(0).isValidate_cstr());
+    builder.setRelyConstraint(pk.get(0).isRely_cstr());
+
+    for (SQLPrimaryKey pkcol : pk) {
+      HbaseMetastoreProto.PrimaryKey.PrimaryKeyColumn.Builder pkColBuilder =
+          HbaseMetastoreProto.PrimaryKey.PrimaryKeyColumn.newBuilder();
+      pkColBuilder.setColumnName(pkcol.getColumn_name());
+      pkColBuilder.setKeySeq(pkcol.getKey_seq());
+      builder.addCols(pkColBuilder);
+    }
+
+    result[1] = builder.build().toByteArray();
+    return result;
+  }
+
+  /**
+   * Serialize the foreign key(s) for a table.
+   * @param fks Foreign key columns.  These may belong to multiple foreign keys.
+   * @return two byte arrays, first containts the key, the second the serialized value.
+   */
+  static byte[][] serializeForeignKeys(List<SQLForeignKey> fks) {
+    // First, figure out the dbName and tableName.  We expect this to match for all list entries.
+    byte[][] result = new byte[2][];
+    String dbName = fks.get(0).getFktable_db();
+    String tableName = fks.get(0).getFktable_name();
+    result[0] = buildKey(HiveStringUtils.normalizeIdentifier(dbName),
+        HiveStringUtils.normalizeIdentifier(tableName));
+
+    HbaseMetastoreProto.ForeignKeys.Builder builder = HbaseMetastoreProto.ForeignKeys.newBuilder();
+
+    // Encode any foreign keys we find.  This can be complex because there may be more than
+    // one foreign key in here, so we need to detect that.
+    Map<String, HbaseMetastoreProto.ForeignKeys.ForeignKey.Builder> fkBuilders = new HashMap<>();
+
+    for (SQLForeignKey fkcol : fks) {
+      HbaseMetastoreProto.ForeignKeys.ForeignKey.Builder fkBuilder =
+          fkBuilders.get(fkcol.getFk_name());
+      if (fkBuilder == null) {
+        // We haven't seen this key before, so add it
+        fkBuilder = HbaseMetastoreProto.ForeignKeys.ForeignKey.newBuilder();
+        fkBuilder.setFkName(fkcol.getFk_name());
+        fkBuilder.setReferencedDbName(fkcol.getPktable_db());
+        assert dbName.equals(fkcol.getFktable_db()) : "You switched databases on me!";
+        fkBuilder.setReferencedTableName(fkcol.getPktable_name());
+        assert tableName.equals(fkcol.getFktable_name()) : "You switched tables on me!";
+        fkBuilder.setReferencedPkName(fkcol.getPk_name());
+        fkBuilder.setUpdateRule(fkcol.getUpdate_rule());
+        fkBuilder.setDeleteRule(fkcol.getDelete_rule());
+        fkBuilder.setEnableConstraint(fkcol.isEnable_cstr());
+        fkBuilder.setValidateConstraint(fkcol.isValidate_cstr());
+        fkBuilder.setRelyConstraint(fkcol.isRely_cstr());
+        fkBuilders.put(fkcol.getFk_name(), fkBuilder);
+      }
+      HbaseMetastoreProto.ForeignKeys.ForeignKey.ForeignKeyColumn.Builder fkColBuilder =
+          HbaseMetastoreProto.ForeignKeys.ForeignKey.ForeignKeyColumn.newBuilder();
+      fkColBuilder.setColumnName(fkcol.getFkcolumn_name());
+      fkColBuilder.setReferencedColumnName(fkcol.getPkcolumn_name());
+      fkColBuilder.setKeySeq(fkcol.getKey_seq());
+      fkBuilder.addCols(fkColBuilder);
+    }
+    for (HbaseMetastoreProto.ForeignKeys.ForeignKey.Builder fkBuilder : fkBuilders.values()) {
+      builder.addFks(fkBuilder);
+    }
+    result[1] = builder.build().toByteArray();
+    return result;
+  }
+
+  /**
+   * Serialize the unique constraint(s) for a table.
+   * @param uks Unique constraint columns.  These may belong to multiple unique constraints.
+   * @return two byte arrays, first contains the key, the second the serialized value.
+   */
+  static byte[][] serializeUniqueConstraints(List<SQLUniqueConstraint> uks) {
+    // First, figure out the dbName and tableName.  We expect this to match for all list entries.
+    byte[][] result = new byte[2][];
+    String dbName = uks.get(0).getTable_db();
+    String tableName = uks.get(0).getTable_name();
+    result[0] = buildKey(HiveStringUtils.normalizeIdentifier(dbName),
+        HiveStringUtils.normalizeIdentifier(tableName));
+
+    HbaseMetastoreProto.UniqueConstraints.Builder builder =
+        HbaseMetastoreProto.UniqueConstraints.newBuilder();
+
+    // Encode any foreign keys we find.  This can be complex because there may be more than
+    // one foreign key in here, so we need to detect that.
+    Map<String, HbaseMetastoreProto.UniqueConstraints.UniqueConstraint.Builder> ukBuilders = new HashMap<>();
+
+    for (SQLUniqueConstraint ukcol : uks) {
+      HbaseMetastoreProto.UniqueConstraints.UniqueConstraint.Builder ukBuilder =
+          ukBuilders.get(ukcol.getUk_name());
+      if (ukBuilder == null) {
+        // We haven't seen this key before, so add it
+        ukBuilder = HbaseMetastoreProto.UniqueConstraints.UniqueConstraint.newBuilder();
+        ukBuilder.setUkName(ukcol.getUk_name());
+        ukBuilder.setEnableConstraint(ukcol.isEnable_cstr());
+        ukBuilder.setValidateConstraint(ukcol.isValidate_cstr());
+        ukBuilder.setRelyConstraint(ukcol.isRely_cstr());
+        ukBuilders.put(ukcol.getUk_name(), ukBuilder);
+      }
+      assert dbName.equals(ukcol.getTable_db()) : "You switched databases on me!";
+      assert tableName.equals(ukcol.getTable_name()) : "You switched tables on me!";
+      HbaseMetastoreProto.UniqueConstraints.UniqueConstraint.UniqueConstraintColumn.Builder ukColBuilder =
+          HbaseMetastoreProto.UniqueConstraints.UniqueConstraint.UniqueConstraintColumn.newBuilder();
+      ukColBuilder.setColumnName(ukcol.getColumn_name());
+      ukColBuilder.setKeySeq(ukcol.getKey_seq());
+      ukBuilder.addCols(ukColBuilder);
+    }
+    for (HbaseMetastoreProto.UniqueConstraints.UniqueConstraint.Builder ukBuilder : ukBuilders.values()) {
+      builder.addUks(ukBuilder);
+    }
+    result[1] = builder.build().toByteArray();
+    return result;
+  }
+
+  /**
+   * Serialize the not null constraint(s) for a table.
+   * @param nns Not null constraint columns.  These may belong to multiple constraints.
+   * @return two byte arrays, first contains the constraint, the second the serialized value.
+   */
+  static byte[][] serializeNotNullConstraints(List<SQLNotNullConstraint> nns) {
+    // First, figure out the dbName and tableName.  We expect this to match for all list entries.
+    byte[][] result = new byte[2][];
+    String dbName = nns.get(0).getTable_db();
+    String tableName = nns.get(0).getTable_name();
+    result[0] = buildKey(HiveStringUtils.normalizeIdentifier(dbName),
+        HiveStringUtils.normalizeIdentifier(tableName));
+
+    HbaseMetastoreProto.NotNullConstraints.Builder builder =
+        HbaseMetastoreProto.NotNullConstraints.newBuilder();
+
+    // Encode any foreign keys we find.  This can be complex because there may be more than
+    // one foreign key in here, so we need to detect that.
+    Map<String, HbaseMetastoreProto.NotNullConstraints.NotNullConstraint.Builder> nnBuilders = new HashMap<>();
+
+    for (SQLNotNullConstraint nncol : nns) {
+      HbaseMetastoreProto.NotNullConstraints.NotNullConstraint.Builder nnBuilder =
+          nnBuilders.get(nncol.getNn_name());
+      if (nnBuilder == null) {
+        // We haven't seen this key before, so add it
+        nnBuilder = HbaseMetastoreProto.NotNullConstraints.NotNullConstraint.newBuilder();
+        nnBuilder.setNnName(nncol.getNn_name());
+        nnBuilder.setEnableConstraint(nncol.isEnable_cstr());
+        nnBuilder.setValidateConstraint(nncol.isValidate_cstr());
+        nnBuilder.setRelyConstraint(nncol.isRely_cstr());
+        nnBuilders.put(nncol.getNn_name(), nnBuilder);
+      }
+      assert dbName.equals(nncol.getTable_db()) : "You switched databases on me!";
+      assert tableName.equals(nncol.getTable_name()) : "You switched tables on me!";
+      HbaseMetastoreProto.NotNullConstraints.NotNullConstraint.NotNullConstraintColumn.Builder nnColBuilder =
+          HbaseMetastoreProto.NotNullConstraints.NotNullConstraint.NotNullConstraintColumn.newBuilder();
+      nnColBuilder.setColumnName(nncol.getColumn_name());
+      nnBuilder.addCols(nnColBuilder);
+    }
+    for (HbaseMetastoreProto.NotNullConstraints.NotNullConstraint.Builder nnBuilder : nnBuilders.values()) {
+      builder.addNns(nnBuilder);
+    }
+    result[1] = builder.build().toByteArray();
+    return result;
+  }
+
+  static List<SQLPrimaryKey> deserializePrimaryKey(String dbName, String tableName, byte[] value)
+      throws InvalidProtocolBufferException {
+    HbaseMetastoreProto.PrimaryKey proto = HbaseMetastoreProto.PrimaryKey.parseFrom(value);
+    List<SQLPrimaryKey> result = new ArrayList<>();
+    for (HbaseMetastoreProto.PrimaryKey.PrimaryKeyColumn protoPkCol : proto.getColsList()) {
+      result.add(new SQLPrimaryKey(dbName, tableName, protoPkCol.getColumnName(),
+          protoPkCol.getKeySeq(), proto.getPkName(), proto.getEnableConstraint(),
+          proto.getValidateConstraint(), proto.getRelyConstraint()));
+    }
+
+    return result;
+  }
+
+  static List<SQLUniqueConstraint> deserializeUniqueConstraint(String dbName, String tableName, byte[] value)
+      throws InvalidProtocolBufferException {
+    List<SQLUniqueConstraint> result = new ArrayList<>();
+    HbaseMetastoreProto.UniqueConstraints protoConstraints =
+        HbaseMetastoreProto.UniqueConstraints.parseFrom(value);
+
+    for (HbaseMetastoreProto.UniqueConstraints.UniqueConstraint proto : protoConstraints.getUksList()) {
+      for (HbaseMetastoreProto.UniqueConstraints.UniqueConstraint.UniqueConstraintColumn protoUkCol :
+          proto.getColsList()) {
+        result.add(new SQLUniqueConstraint(dbName, tableName, protoUkCol.getColumnName(),
+            protoUkCol.getKeySeq(),
+            proto.getUkName(), proto.getEnableConstraint(),
+            proto.getValidateConstraint(), proto.getRelyConstraint()));
+      }
+    }
+    return result;
+  }
+
+  static List<SQLNotNullConstraint> deserializeNotNullConstraint(String dbName, String tableName, byte[] value)
+      throws InvalidProtocolBufferException {
+    List<SQLNotNullConstraint> result = new ArrayList<>();
+    HbaseMetastoreProto.NotNullConstraints protoConstraints =
+        HbaseMetastoreProto.NotNullConstraints.parseFrom(value);
+
+    for (HbaseMetastoreProto.NotNullConstraints.NotNullConstraint proto : protoConstraints.getNnsList()) {
+      for (HbaseMetastoreProto.NotNullConstraints.NotNullConstraint.NotNullConstraintColumn protoNnCol :
+          proto.getColsList()) {
+        result.add(new SQLNotNullConstraint(dbName, tableName, protoNnCol.getColumnName(),
+            proto.getNnName(), proto.getEnableConstraint(),
+            proto.getValidateConstraint(), proto.getRelyConstraint()));
+      }
+    }
+    return result;
+  }
+
+  static List<SQLForeignKey> deserializeForeignKeys(String dbName, String tableName, byte[] value)
+      throws InvalidProtocolBufferException {
+    List<SQLForeignKey> result = new ArrayList<>();
+    HbaseMetastoreProto.ForeignKeys protoConstraints =
+        HbaseMetastoreProto.ForeignKeys.parseFrom(value);
+
+    for (HbaseMetastoreProto.ForeignKeys.ForeignKey protoFk : protoConstraints.getFksList()) {
+      for (HbaseMetastoreProto.ForeignKeys.ForeignKey.ForeignKeyColumn protoFkCol :
+          protoFk.getColsList()) {
+        result.add(new SQLForeignKey(protoFk.getReferencedDbName(), protoFk.getReferencedTableName(),
+            protoFkCol.getReferencedColumnName(), dbName, tableName, protoFkCol.getColumnName(),
+            protoFkCol.getKeySeq(), protoFk.getUpdateRule(), protoFk.getDeleteRule(),
+            protoFk.getFkName(), protoFk.getReferencedPkName(), protoFk.getEnableConstraint(),
+            protoFk.getValidateConstraint(), protoFk.getRelyConstraint()));
+      }
+    }
+    return result;
   }
 
   /**

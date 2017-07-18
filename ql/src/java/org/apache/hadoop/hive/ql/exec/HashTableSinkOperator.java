@@ -46,7 +46,7 @@ import org.apache.hadoop.hive.ql.plan.HashTableSinkDesc;
 import org.apache.hadoop.hive.ql.plan.TableDesc;
 import org.apache.hadoop.hive.ql.plan.api.OperatorType;
 import org.apache.hadoop.hive.ql.session.SessionState.LogHelper;
-import org.apache.hadoop.hive.serde2.SerDe;
+import org.apache.hadoop.hive.serde2.AbstractSerDe;
 import org.apache.hadoop.hive.serde2.SerDeException;
 import org.apache.hadoop.hive.serde2.SerDeUtils;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
@@ -143,19 +143,19 @@ public class HashTableSinkOperator extends TerminalOperator<HashTableSinkDesc> i
 
     // process join keys
     joinKeys = new List[tagLen];
-    JoinUtil.populateJoinKeyValue(joinKeys, conf.getKeys(), posBigTableAlias);
+    JoinUtil.populateJoinKeyValue(joinKeys, conf.getKeys(), posBigTableAlias, hconf);
     joinKeysObjectInspectors = JoinUtil.getObjectInspectorsFromEvaluators(joinKeys,
         inputObjInspectors, posBigTableAlias, tagLen);
 
     // process join values
     joinValues = new List[tagLen];
-    JoinUtil.populateJoinKeyValue(joinValues, conf.getExprs(), posBigTableAlias);
+    JoinUtil.populateJoinKeyValue(joinValues, conf.getExprs(), posBigTableAlias, hconf);
     joinValuesObjectInspectors = JoinUtil.getObjectInspectorsFromEvaluators(joinValues,
         inputObjInspectors, posBigTableAlias, tagLen);
 
     // process join filters
     joinFilters = new List[tagLen];
-    JoinUtil.populateJoinKeyValue(joinFilters, conf.getFilters(), posBigTableAlias);
+    JoinUtil.populateJoinKeyValue(joinFilters, conf.getFilters(), posBigTableAlias, hconf);
     joinFilterObjectInspectors = JoinUtil.getObjectInspectorsFromEvaluators(joinFilters,
         inputObjInspectors, posBigTableAlias, tagLen);
 
@@ -180,7 +180,7 @@ public class HashTableSinkOperator extends TerminalOperator<HashTableSinkDesc> i
     }
     try {
       TableDesc keyTableDesc = conf.getKeyTblDesc();
-      SerDe keySerde = (SerDe) ReflectionUtils.newInstance(keyTableDesc.getDeserializerClass(),
+      AbstractSerDe keySerde = (AbstractSerDe) ReflectionUtils.newInstance(keyTableDesc.getDeserializerClass(),
           null);
       SerDeUtils.initializeSerDe(keySerde, null, keyTableDesc.getProperties(), null);
       MapJoinObjectSerDeContext keyContext = new MapJoinObjectSerDeContext(keySerde, false);
@@ -190,7 +190,7 @@ public class HashTableSinkOperator extends TerminalOperator<HashTableSinkDesc> i
         }
         mapJoinTables[pos] = new HashMapWrapper(hconf, -1);
         TableDesc valueTableDesc = conf.getValueTblFilteredDescs().get(pos);
-        SerDe valueSerDe = (SerDe) ReflectionUtils.newInstance(valueTableDesc.getDeserializerClass(), null);
+        AbstractSerDe valueSerDe = (AbstractSerDe) ReflectionUtils.newInstance(valueTableDesc.getDeserializerClass(), null);
         SerDeUtils.initializeSerDe(valueSerDe, null, valueTableDesc.getProperties(), null);
         mapJoinTableSerdes[pos] = new MapJoinTableContainerSerDe(keyContext, new MapJoinObjectSerDeContext(
             valueSerDe, hasFilter(pos)));
@@ -275,7 +275,7 @@ public class HashTableSinkOperator extends TerminalOperator<HashTableSinkDesc> i
   public void closeOp(boolean abort) throws HiveException {
     try {
       if (mapJoinTables == null) {
-        if (isLogDebugEnabled) {
+        if (LOG.isDebugEnabled()) {
           LOG.debug("mapJoinTables is null");
         }
       } else {
@@ -292,7 +292,7 @@ public class HashTableSinkOperator extends TerminalOperator<HashTableSinkDesc> i
   protected void flushToFile() throws IOException, HiveException {
     // get tmp file URI
     Path tmpURI = getExecContext().getLocalWork().getTmpPath();
-    if (isLogInfoEnabled) {
+    if (LOG.isInfoEnabled()) {
       LOG.info("Temp URI for side table: " + tmpURI);
     }
     for (byte tag = 0; tag < mapJoinTables.length; tag++) {

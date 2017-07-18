@@ -41,7 +41,7 @@ import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.TableDesc;
 import org.apache.hadoop.hive.ql.session.SessionState;
 import org.apache.hadoop.hive.serde2.Deserializer;
-import org.apache.hadoop.hive.serde2.SerDe;
+import org.apache.hadoop.hive.serde2.AbstractSerDe;
 import org.apache.hadoop.hive.serde2.SerDeException;
 import org.apache.hadoop.hive.serde2.SerDeUtils;
 import org.apache.hadoop.hive.serde2.binarysortable.BinarySortableSerDe;
@@ -59,6 +59,8 @@ import org.apache.hadoop.util.StringUtils;
 import org.apache.tez.runtime.api.Reader;
 import org.apache.tez.runtime.library.api.KeyValueReader;
 import org.apache.tez.runtime.library.api.KeyValuesReader;
+
+import com.google.common.base.Preconditions;
 
 /**
  * Process input from tez LogicalInput and write output - for a map plan
@@ -79,7 +81,7 @@ public class ReduceRecordSource implements RecordSource {
 
   // Input value serde needs to be an array to support different SerDe
   // for different tags
-  private SerDe inputValueDeserializer;
+  private AbstractSerDe inputValueDeserializer;
 
   private TableDesc keyTableDesc;
   private TableDesc valueTableDesc;
@@ -100,13 +102,11 @@ public class ReduceRecordSource implements RecordSource {
 
   // number of columns pertaining to keys in a vectorized row batch
   private int firstValueColumnOffset;
-  private final int BATCH_SIZE = VectorizedRowBatch.DEFAULT_SIZE;
+
+  private final int BATCH_BYTES = VectorizedRowBatch.DEFAULT_BYTES;
 
   private StructObjectInspector keyStructInspector;
   private StructObjectInspector valueStructInspectors;
-
-  /* this is only used in the error code path */
-  private List<VectorExpressionWriter> valueStringWriters;
 
   private KeyValuesAdapter reader;
 
@@ -120,11 +120,14 @@ public class ReduceRecordSource implements RecordSource {
 
   private final GroupIterator groupIterator = new GroupIterator();
 
+  private long vectorizedVertexNum;
+
   void init(JobConf jconf, Operator<?> reducer, boolean vectorized, TableDesc keyTableDesc,
       TableDesc valueTableDesc, Reader reader, boolean handleGroupKey, byte tag,
-      VectorizedRowBatchCtx batchContext)
+      VectorizedRowBatchCtx batchContext, long vectorizedVertexNum)
       throws Exception {
 
+    this.vectorizedVertexNum = vectorizedVertexNum;
     ObjectInspector keyObjectInspector;
 
     this.reducer = reducer;
@@ -151,7 +154,7 @@ public class ReduceRecordSource implements RecordSource {
 
       // We should initialize the SerDe with the TypeInfo when available.
       this.valueTableDesc = valueTableDesc;
-      inputValueDeserializer = (SerDe) ReflectionUtils.newInstance(
+      inputValueDeserializer = (AbstractSerDe) ReflectionUtils.newInstance(
           valueTableDesc.getDeserializerClass(), null);
       SerDeUtils.initializeSerDe(inputValueDeserializer, null,
           valueTableDesc.getProperties(), null);
@@ -165,13 +168,6 @@ public class ReduceRecordSource implements RecordSource {
 
         final int totalColumns = firstValueColumnOffset +
             valueStructInspectors.getAllStructFieldRefs().size();
-        valueStringWriters = new ArrayList<VectorExpressionWriter>(totalColumns);
-        valueStringWriters.addAll(Arrays
-            .asList(VectorExpressionWriterFactory
-                .genVectorStructExpressionWritables(keyStructInspector)));
-        valueStringWriters.addAll(Arrays
-            .asList(VectorExpressionWriterFactory
-                .genVectorStructExpressionWritables(valueStructInspectors)));
 
         rowObjectInspector = Utilities.constructVectorizedReduceRowOI(keyStructInspector,
             valueStructInspectors);
@@ -186,7 +182,9 @@ public class ReduceRecordSource implements RecordSource {
                                   VectorizedBatchUtil.typeInfosFromStructObjectInspector(
                                       keyStructInspector),
                                   /* useExternalBuffer */ true,
-                                  binarySortableSerDe.getSortOrders()));
+                                  binarySortableSerDe.getSortOrders(),
+                                  binarySortableSerDe.getNullMarkers(),
+                                  binarySortableSerDe.getNotNullMarkers()));
         keyBinarySortableDeserializeToRow.init(0);
 
         final int valuesSize = valueStructInspectors.getAllStructFieldRefs().size();
@@ -428,7 +426,10 @@ public class ReduceRecordSource implements RecordSource {
       VectorizedBatchUtil.setRepeatingColumn(batch, i);
     }
 
+    final int maxSize = batch.getMaxSize();
+    Preconditions.checkState(maxSize > 0);
     int rowIdx = 0;
+    int batchBytes = keyBytes.length;
     try {
       for (Object value : values) {
         if (valueLazyBinaryDeserializeToRow != null) {
@@ -436,16 +437,16 @@ public class ReduceRecordSource implements RecordSource {
           BytesWritable valueWritable = (BytesWritable) value;
           byte[] valueBytes = valueWritable.getBytes();
           int valueLength = valueWritable.getLength();
-
-          // l4j.info("ReduceRecordSource processVectorGroup valueBytes " + valueLength + " " +
-          //     VectorizedBatchUtil.displayBytes(valueBytes, 0, valueLength));
+          batchBytes += valueLength;
 
           valueLazyBinaryDeserializeToRow.setBytes(valueBytes, 0, valueLength);
           valueLazyBinaryDeserializeToRow.deserialize(batch, rowIdx);
         }
         rowIdx++;
-        if (rowIdx >= BATCH_SIZE) {
-          VectorizedBatchUtil.setBatchSize(batch, rowIdx);
+        if (rowIdx >= maxSize || batchBytes >= BATCH_BYTES) {
+
+          // Batch is full.
+          batch.size = rowIdx;
           reducer.process(batch, tag);
 
           // Reset just the value columns and value buffer.
@@ -454,6 +455,7 @@ public class ReduceRecordSource implements RecordSource {
             batch.cols[i].reset();
           }
           rowIdx = 0;
+          batchBytes = 0;
         }
       }
       if (rowIdx > 0) {
@@ -471,7 +473,8 @@ public class ReduceRecordSource implements RecordSource {
             + StringUtils.stringifyException(e2) + " ]";
       }
       throw new HiveException("Hive Runtime Error while processing vector batch (tag="
-          + tag + ") " + rowString, e);
+          + tag + ") (vectorizedVertexNum " + vectorizedVertexNum + ") " +
+          rowString, e);
     }
   }
 

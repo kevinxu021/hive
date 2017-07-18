@@ -1,3 +1,5 @@
+set hive.strict.checks.bucketing=false;
+
 set hive.input.format=org.apache.hadoop.hive.ql.io.HiveInputFormat;
 
 CREATE TABLE srcbucket_mapjoin_part_1 (key INT, value STRING) PARTITIONED BY (part STRING) 
@@ -22,7 +24,7 @@ ALTER TABLE srcbucket_mapjoin_part_2 CLUSTERED BY (key) INTO 2 BUCKETS;
 LOAD DATA LOCAL INPATH '../../data/files/srcbucket20.txt' INTO TABLE srcbucket_mapjoin_part_2 PARTITION (part='2');
 LOAD DATA LOCAL INPATH '../../data/files/srcbucket21.txt' INTO TABLE srcbucket_mapjoin_part_2 PARTITION (part='2');
 
-
+set hive.cbo.enable=false;
 set hive.optimize.bucketmapjoin=true;
 
 -- The table and partition bucketing metadata doesn't match but the bucket numbers of all partitions is

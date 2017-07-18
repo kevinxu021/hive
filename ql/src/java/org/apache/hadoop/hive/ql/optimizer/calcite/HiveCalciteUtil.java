@@ -27,9 +27,11 @@ import java.util.Set;
 
 import org.apache.calcite.plan.RelOptCluster;
 import org.apache.calcite.plan.RelOptUtil;
+import org.apache.calcite.plan.RelTraitSet;
 import org.apache.calcite.plan.RelOptUtil.InputFinder;
 import org.apache.calcite.plan.RelOptUtil.InputReferencedVisitor;
 import org.apache.calcite.rel.RelNode;
+import org.apache.calcite.rel.core.AggregateCall;
 import org.apache.calcite.rel.core.Join;
 import org.apache.calcite.rel.core.RelFactories.ProjectFactory;
 import org.apache.calcite.rel.core.Sort;
@@ -46,26 +48,36 @@ import org.apache.calcite.rex.RexLiteral;
 import org.apache.calcite.rex.RexLocalRef;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.rex.RexOver;
+import org.apache.calcite.rex.RexPatternFieldRef;
 import org.apache.calcite.rex.RexRangeRef;
 import org.apache.calcite.rex.RexSubQuery;
 import org.apache.calcite.rex.RexUtil;
 import org.apache.calcite.rex.RexVisitor;
 import org.apache.calcite.rex.RexVisitorImpl;
+import org.apache.calcite.sql.SqlAggFunction;
 import org.apache.calcite.sql.SqlKind;
+import org.apache.calcite.sql.SqlOperator;
 import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import org.apache.calcite.sql.validate.SqlValidatorUtil;
 import org.apache.calcite.util.ImmutableBitSet;
 import org.apache.calcite.util.Pair;
 import org.apache.calcite.util.Util;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
+import org.apache.hadoop.hive.ql.exec.FunctionInfo;
+import org.apache.hadoop.hive.ql.exec.FunctionRegistry;
 import org.apache.hadoop.hive.ql.metadata.VirtualColumn;
 import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveMultiJoin;
 import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveProject;
+import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveTableFunctionScan;
 import org.apache.hadoop.hive.ql.optimizer.calcite.translator.ExprNodeConverter;
+import org.apache.hadoop.hive.ql.optimizer.calcite.translator.SqlFunctionConverter;
+import org.apache.hadoop.hive.ql.optimizer.calcite.translator.TypeConverter;
 import org.apache.hadoop.hive.ql.parse.ASTNode;
 import org.apache.hadoop.hive.ql.parse.HiveParser;
 import org.apache.hadoop.hive.ql.parse.ParseUtils;
+import org.apache.hadoop.hive.ql.parse.SemanticException;
 import org.apache.hadoop.hive.ql.plan.ExprNodeDesc;
+import org.apache.hadoop.hive.serde2.typeinfo.PrimitiveTypeInfo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -77,6 +89,7 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
+import org.apache.calcite.rex.RexTableInputRef;
 
 /**
  * Generic utility functions needed for Calcite based Hive CBO.
@@ -671,7 +684,8 @@ public class HiveCalciteUtil {
     // Note: this is the last step, trying to avoid the expensive call to the metadata provider
     //       if possible
     Set<String> predicatesInSubtree = Sets.newHashSet();
-    for (RexNode pred : RelMetadataQuery.instance().getPulledUpPredicates(inp).pulledUpPredicates) {
+    final RelMetadataQuery mq = inp.getCluster().getMetadataQuery();
+    for (RexNode pred : mq.getPulledUpPredicates(inp).pulledUpPredicates) {
       predicatesInSubtree.add(pred.toString());
       predicatesInSubtree.addAll(Lists.transform(RelOptUtil.conjunctions(pred), REX_STR_FN));
     }
@@ -942,6 +956,68 @@ public class HiveCalciteUtil {
     return fieldNames;
   }
 
+  public static AggregateCall createSingleArgAggCall(String funcName, RelOptCluster cluster,
+      PrimitiveTypeInfo typeInfo, Integer pos, RelDataType aggFnRetType) {
+    ImmutableList.Builder<RelDataType> aggArgRelDTBldr = new ImmutableList.Builder<RelDataType>();
+    aggArgRelDTBldr.add(TypeConverter.convert(typeInfo, cluster.getTypeFactory()));
+    SqlAggFunction aggFunction = SqlFunctionConverter.getCalciteAggFn(funcName, false,
+        aggArgRelDTBldr.build(), aggFnRetType);
+    List<Integer> argList = new ArrayList<Integer>();
+    argList.add(pos);
+    return new AggregateCall(aggFunction, false, argList, aggFnRetType, null);
+  }
+
+  public static HiveTableFunctionScan createUDTFForSetOp(RelOptCluster cluster, RelNode input)
+      throws SemanticException {
+    RelTraitSet traitSet = TraitsUtil.getDefaultTraitSet(cluster);
+
+    List<RexNode> originalInputRefs = Lists.transform(input.getRowType().getFieldList(),
+        new Function<RelDataTypeField, RexNode>() {
+          @Override
+          public RexNode apply(RelDataTypeField input) {
+            return new RexInputRef(input.getIndex(), input.getType());
+          }
+        });
+    ImmutableList.Builder<RelDataType> argTypeBldr = ImmutableList.<RelDataType> builder();
+    for (int i = 0; i < originalInputRefs.size(); i++) {
+      argTypeBldr.add(originalInputRefs.get(i).getType());
+    }
+
+    RelDataType retType = input.getRowType();
+
+    String funcName = "replicate_rows";
+    FunctionInfo fi = FunctionRegistry.getFunctionInfo(funcName);
+    SqlOperator calciteOp = SqlFunctionConverter.getCalciteOperator(funcName, fi.getGenericUDTF(),
+        argTypeBldr.build(), retType);
+
+    // Hive UDTF only has a single input
+    List<RelNode> list = new ArrayList<>();
+    list.add(input);
+
+    RexNode rexNode = cluster.getRexBuilder().makeCall(calciteOp, originalInputRefs);
+
+    return HiveTableFunctionScan.create(cluster, traitSet, list, rexNode, null, retType, null);
+  }
+
+  // this will create a project which will project out the column in positions
+  public static HiveProject createProjectWithoutColumn(RelNode input, Set<Integer> positions)
+      throws CalciteSemanticException {
+    List<RexNode> originalInputRefs = Lists.transform(input.getRowType().getFieldList(),
+        new Function<RelDataTypeField, RexNode>() {
+          @Override
+          public RexNode apply(RelDataTypeField input) {
+            return new RexInputRef(input.getIndex(), input.getType());
+          }
+        });
+    List<RexNode> copyInputRefs = new ArrayList<>();
+    for (int i = 0; i < originalInputRefs.size(); i++) {
+      if (!positions.contains(i)) {
+        copyInputRefs.add(originalInputRefs.get(i));
+      }
+    }
+    return HiveProject.create(input, copyInputRefs, null);
+  }
+
   /**
    * Walks over an expression and determines whether it is constant.
    */
@@ -999,6 +1075,16 @@ public class HiveCalciteUtil {
     @Override
     public Boolean visitSubQuery(RexSubQuery subQuery) {
       // it seems that it is not used by anything.
+      return false;
+    }
+
+    @Override
+    public Boolean visitPatternFieldRef(RexPatternFieldRef fieldRef) {
+      return false;
+    }
+
+    @Override
+    public Boolean visitTableInputRef(RexTableInputRef fieldRef) {
       return false;
     }
   }

@@ -19,8 +19,9 @@
 package org.apache.hive.jdbc;
 
 import org.apache.commons.lang.StringUtils;
+import org.apache.hadoop.hive.common.auth.HiveAuthUtils;
 import org.apache.hive.jdbc.Utils.JdbcConnectionParams;
-import org.apache.hive.service.auth.HiveAuthFactory;
+import org.apache.hive.service.auth.HiveAuthConstants;
 import org.apache.hive.service.auth.KerberosSaslHelper;
 import org.apache.hive.service.auth.PlainSaslHelper;
 import org.apache.hive.service.auth.SaslQOP;
@@ -40,6 +41,7 @@ import org.apache.hive.service.rpc.thrift.TSessionHandle;
 import org.apache.http.HttpRequestInterceptor;
 import org.apache.http.HttpResponse;
 import org.apache.http.client.CookieStore;
+import org.apache.http.client.HttpRequestRetryHandler;
 import org.apache.http.client.ServiceUnavailableRetryStrategy;
 import org.apache.http.config.Registry;
 import org.apache.http.config.RegistryBuilder;
@@ -90,6 +92,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLClientInfoException;
 import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
 import java.sql.SQLWarning;
 import java.sql.SQLXML;
 import java.sql.Savepoint;
@@ -104,6 +107,7 @@ import java.util.Map.Entry;
 import java.util.Properties;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * HiveConnection.
@@ -166,6 +170,7 @@ public class HiveConnection implements java.sql.Connection {
     supportedProtocols.add(TProtocolVersion.HIVE_CLI_SERVICE_PROTOCOL_V7);
     supportedProtocols.add(TProtocolVersion.HIVE_CLI_SERVICE_PROTOCOL_V8);
     supportedProtocols.add(TProtocolVersion.HIVE_CLI_SERVICE_PROTOCOL_V9);
+    supportedProtocols.add(TProtocolVersion.HIVE_CLI_SERVICE_PROTOCOL_V10);
 
     if (isEmbeddedMode) {
       EmbeddedThriftBinaryCLIService embeddedClient = new EmbeddedThriftBinaryCLIService();
@@ -298,14 +303,14 @@ public class HiveConnection implements java.sql.Connection {
 
 
   private void openTransport() throws Exception {
-      assumeSubject =
-          JdbcConnectionParams.AUTH_KERBEROS_AUTH_TYPE_FROM_SUBJECT.equals(sessConfMap
-              .get(JdbcConnectionParams.AUTH_KERBEROS_AUTH_TYPE));
-      transport = isHttpTransportMode() ? createHttpTransport() : createBinaryTransport();
-      if (!transport.isOpen()) {
-        transport.open();
-        logZkDiscoveryMessage("Connected to " + connParams.getHost() + ":" + connParams.getPort());
-      }
+    assumeSubject =
+        JdbcConnectionParams.AUTH_KERBEROS_AUTH_TYPE_FROM_SUBJECT.equals(sessConfMap
+            .get(JdbcConnectionParams.AUTH_KERBEROS_AUTH_TYPE));
+    transport = isHttpTransportMode() ? createHttpTransport() : createBinaryTransport();
+    if (!transport.isOpen()) {
+      transport.open();
+    }
+    logZkDiscoveryMessage("Connected to " + connParams.getHost() + ":" + connParams.getPort());
   }
 
   public String getConnectedUrl() {
@@ -382,9 +387,9 @@ public class HiveConnection implements java.sql.Connection {
        * Add an interceptor to pass username/password in the header.
        * In https mode, the entire information is encrypted
        */
-      requestInterceptor = new HttpBasicAuthInterceptor(getUserName(), getPassword(),
-                                                        cookieStore, cookieName, useSsl,
-                                                        additionalHttpHeaders);
+        requestInterceptor =
+            new HttpBasicAuthInterceptor(getUserName(), getPassword(), cookieStore, cookieName,
+                useSsl, additionalHttpHeaders);
       }
     }
     // Configure http client for cookie based authentication
@@ -417,6 +422,23 @@ public class HiveConnection implements java.sql.Connection {
     } else {
       httpClientBuilder = HttpClientBuilder.create();
     }
+    // In case the server's idletimeout is set to a lower value, it might close it's side of
+    // connection. However we retry one more time on NoHttpResponseException
+    httpClientBuilder.setRetryHandler(new HttpRequestRetryHandler() {
+      @Override
+      public boolean retryRequest(IOException exception, int executionCount, HttpContext context) {
+        if (executionCount > 1) {
+          LOG.info("Retry attempts to connect to server exceeded.");
+          return false;
+        }
+        if (exception instanceof org.apache.http.NoHttpResponseException) {
+          LOG.info("Could not connect to the server. Retrying one more time.");
+          return true;
+        }
+        return false;
+      }
+    });
+
     // Add the request interceptor to the client builder
     httpClientBuilder.addInterceptorFirst(requestInterceptor);
 
@@ -487,14 +509,14 @@ public class HiveConnection implements java.sql.Connection {
         JdbcConnectionParams.SSL_TRUST_STORE_PASSWORD);
 
       if (sslTrustStore == null || sslTrustStore.isEmpty()) {
-        transport = HiveAuthFactory.getSSLSocket(host, port, loginTimeout);
+        transport = HiveAuthUtils.getSSLSocket(host, port, loginTimeout);
       } else {
-        transport = HiveAuthFactory.getSSLSocket(host, port, loginTimeout,
+        transport = HiveAuthUtils.getSSLSocket(host, port, loginTimeout,
             sslTrustStore, sslTrustStorePassword);
       }
     } else {
       // get non-SSL socket transport
-      transport = HiveAuthFactory.getSocketTransport(host, port, loginTimeout);
+      transport = HiveAuthUtils.getSocketTransport(host, port, loginTimeout);
     }
     return transport;
   }
@@ -614,7 +636,7 @@ public class HiveConnection implements java.sql.Connection {
     if (JdbcConnectionParams.AUTH_TOKEN.equalsIgnoreCase(jdbcConnConf.get(JdbcConnectionParams.AUTH_TYPE))) {
       // check delegation token in job conf if any
       try {
-        tokenStr = org.apache.hadoop.hive.shims.Utils.getTokenStrForm(HiveAuthFactory.HS2_CLIENT_TOKEN);
+        tokenStr = org.apache.hadoop.hive.shims.Utils.getTokenStrForm(HiveAuthConstants.HS2_CLIENT_TOKEN);
       } catch (IOException e) {
         throw new SQLException("Error reading token ", e);
       }
@@ -636,12 +658,15 @@ public class HiveConnection implements java.sql.Connection {
     }
     // switch the database
     openConf.put("use:database", connParams.getDbName());
+    // set the fetchSize
+    openConf.put("set:hiveconf:hive.server2.thrift.resultset.default.fetch.size",
+      Integer.toString(fetchSize));
 
     // set the session configuration
     Map<String, String> sessVars = connParams.getSessionVars();
-    if (sessVars.containsKey(HiveAuthFactory.HS2_PROXY_USER)) {
-      openConf.put(HiveAuthFactory.HS2_PROXY_USER,
-          sessVars.get(HiveAuthFactory.HS2_PROXY_USER));
+    if (sessVars.containsKey(HiveAuthConstants.HS2_PROXY_USER)) {
+      openConf.put(HiveAuthConstants.HS2_PROXY_USER,
+          sessVars.get(HiveAuthConstants.HS2_PROXY_USER));
     }
     openReq.setConfiguration(openConf);
 
@@ -661,6 +686,13 @@ public class HiveConnection implements java.sql.Connection {
       }
       protocol = openResp.getServerProtocolVersion();
       sessHandle = openResp.getSessionHandle();
+
+      // Update fetchSize if modified by server
+      String serverFetchSize =
+        openResp.getConfiguration().get("hive.server2.thrift.resultset.default.fetch.size");
+      if (serverFetchSize != null) {
+        fetchSize = Integer.parseInt(serverFetchSize);
+      }
     } catch (TException e) {
       LOG.error("Error opening session", e);
       throw new SQLException("Could not establish connection to "
@@ -739,7 +771,7 @@ public class HiveConnection implements java.sql.Connection {
 
   public void abort(Executor executor) throws SQLException {
     // JDK 1.7
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public String getDelegationToken(String owner, String renewer) throws SQLException {
@@ -823,7 +855,7 @@ public class HiveConnection implements java.sql.Connection {
   @Override
   public void commit() throws SQLException {
     // TODO Auto-generated method stub
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   /*
@@ -836,7 +868,7 @@ public class HiveConnection implements java.sql.Connection {
   @Override
   public Array createArrayOf(String arg0, Object[] arg1) throws SQLException {
     // TODO Auto-generated method stub
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   /*
@@ -848,7 +880,7 @@ public class HiveConnection implements java.sql.Connection {
   @Override
   public Blob createBlob() throws SQLException {
     // TODO Auto-generated method stub
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   /*
@@ -860,7 +892,7 @@ public class HiveConnection implements java.sql.Connection {
   @Override
   public Clob createClob() throws SQLException {
     // TODO Auto-generated method stub
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   /*
@@ -872,7 +904,7 @@ public class HiveConnection implements java.sql.Connection {
   @Override
   public NClob createNClob() throws SQLException {
     // TODO Auto-generated method stub
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   /*
@@ -884,7 +916,7 @@ public class HiveConnection implements java.sql.Connection {
   @Override
   public SQLXML createSQLXML() throws SQLException {
     // TODO Auto-generated method stub
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   /**
@@ -934,7 +966,7 @@ public class HiveConnection implements java.sql.Connection {
   public Statement createStatement(int resultSetType, int resultSetConcurrency,
       int resultSetHoldability) throws SQLException {
     // TODO Auto-generated method stub
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   /*
@@ -947,7 +979,7 @@ public class HiveConnection implements java.sql.Connection {
   public Struct createStruct(String typeName, Object[] attributes)
       throws SQLException {
     // TODO Auto-generated method stub
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   /*
@@ -981,7 +1013,7 @@ public class HiveConnection implements java.sql.Connection {
   @Override
   public Properties getClientInfo() throws SQLException {
     // TODO Auto-generated method stub
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   /*
@@ -993,7 +1025,7 @@ public class HiveConnection implements java.sql.Connection {
   @Override
   public String getClientInfo(String name) throws SQLException {
     // TODO Auto-generated method stub
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   /*
@@ -1005,7 +1037,7 @@ public class HiveConnection implements java.sql.Connection {
   @Override
   public int getHoldability() throws SQLException {
     // TODO Auto-generated method stub
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   /*
@@ -1024,7 +1056,7 @@ public class HiveConnection implements java.sql.Connection {
 
   public int getNetworkTimeout() throws SQLException {
     // JDK 1.7
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public String getSchema() throws SQLException {
@@ -1060,7 +1092,7 @@ public class HiveConnection implements java.sql.Connection {
   @Override
   public Map<String, Class<?>> getTypeMap() throws SQLException {
     // TODO Auto-generated method stub
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   /*
@@ -1127,7 +1159,7 @@ public class HiveConnection implements java.sql.Connection {
   @Override
   public String nativeSQL(String sql) throws SQLException {
     // TODO Auto-generated method stub
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   /*
@@ -1139,7 +1171,7 @@ public class HiveConnection implements java.sql.Connection {
   @Override
   public CallableStatement prepareCall(String sql) throws SQLException {
     // TODO Auto-generated method stub
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   /*
@@ -1152,7 +1184,7 @@ public class HiveConnection implements java.sql.Connection {
   public CallableStatement prepareCall(String sql, int resultSetType,
       int resultSetConcurrency) throws SQLException {
     // TODO Auto-generated method stub
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   /*
@@ -1165,7 +1197,7 @@ public class HiveConnection implements java.sql.Connection {
   public CallableStatement prepareCall(String sql, int resultSetType,
       int resultSetConcurrency, int resultSetHoldability) throws SQLException {
     // TODO Auto-generated method stub
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   /*
@@ -1201,7 +1233,7 @@ public class HiveConnection implements java.sql.Connection {
   public PreparedStatement prepareStatement(String sql, int[] columnIndexes)
       throws SQLException {
     // TODO Auto-generated method stub
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   /*
@@ -1215,7 +1247,7 @@ public class HiveConnection implements java.sql.Connection {
   public PreparedStatement prepareStatement(String sql, String[] columnNames)
       throws SQLException {
     // TODO Auto-generated method stub
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   /*
@@ -1240,7 +1272,7 @@ public class HiveConnection implements java.sql.Connection {
   public PreparedStatement prepareStatement(String sql, int resultSetType,
       int resultSetConcurrency, int resultSetHoldability) throws SQLException {
     // TODO Auto-generated method stub
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   /*
@@ -1252,7 +1284,7 @@ public class HiveConnection implements java.sql.Connection {
   @Override
   public void releaseSavepoint(Savepoint savepoint) throws SQLException {
     // TODO Auto-generated method stub
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   /*
@@ -1264,7 +1296,7 @@ public class HiveConnection implements java.sql.Connection {
   @Override
   public void rollback() throws SQLException {
     // TODO Auto-generated method stub
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   /*
@@ -1276,7 +1308,7 @@ public class HiveConnection implements java.sql.Connection {
   @Override
   public void rollback(Savepoint savepoint) throws SQLException {
     // TODO Auto-generated method stub
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   /*
@@ -1352,12 +1384,12 @@ public class HiveConnection implements java.sql.Connection {
   @Override
   public void setHoldability(int holdability) throws SQLException {
     // TODO Auto-generated method stub
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public void setNetworkTimeout(Executor executor, int milliseconds) throws SQLException {
     // JDK 1.7
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   /*
@@ -1389,7 +1421,7 @@ public class HiveConnection implements java.sql.Connection {
   @Override
   public Savepoint setSavepoint() throws SQLException {
     // TODO Auto-generated method stub
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   /*
@@ -1401,7 +1433,7 @@ public class HiveConnection implements java.sql.Connection {
   @Override
   public Savepoint setSavepoint(String name) throws SQLException {
     // TODO Auto-generated method stub
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public void setSchema(String schema) throws SQLException {
@@ -1437,7 +1469,7 @@ public class HiveConnection implements java.sql.Connection {
   @Override
   public void setTypeMap(Map<String, Class<?>> map) throws SQLException {
     // TODO Auto-generated method stub
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   /*
@@ -1449,7 +1481,7 @@ public class HiveConnection implements java.sql.Connection {
   @Override
   public boolean isWrapperFor(Class<?> iface) throws SQLException {
     // TODO Auto-generated method stub
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   /*
@@ -1461,7 +1493,7 @@ public class HiveConnection implements java.sql.Connection {
   @Override
   public <T> T unwrap(Class<T> iface) throws SQLException {
     // TODO Auto-generated method stub
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public TProtocolVersion getProtocol() {
@@ -1478,6 +1510,7 @@ public class HiveConnection implements java.sql.Connection {
 
   private static class SynchronizedHandler implements InvocationHandler {
     private final TCLIService.Iface client;
+    private final ReentrantLock lock = new ReentrantLock(true);
 
     SynchronizedHandler(TCLIService.Iface client) {
       this.client = client;
@@ -1487,9 +1520,8 @@ public class HiveConnection implements java.sql.Connection {
     public Object invoke(Object proxy, Method method, Object [] args)
         throws Throwable {
       try {
-        synchronized (client) {
-          return method.invoke(client, args);
-        }
+        lock.lock();
+        return method.invoke(client, args);
       } catch (InvocationTargetException e) {
         // all IFace APIs throw TException
         if (e.getTargetException() instanceof TException) {
@@ -1501,6 +1533,8 @@ public class HiveConnection implements java.sql.Connection {
         }
       } catch (Exception e) {
         throw new TException("Error in calling method " + method.getName(), e);
+      } finally {
+        lock.unlock();
       }
     }
   }

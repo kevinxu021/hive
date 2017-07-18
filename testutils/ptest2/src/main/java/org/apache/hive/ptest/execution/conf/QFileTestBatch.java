@@ -18,11 +18,15 @@
  */
 package org.apache.hive.ptest.execution.conf;
 
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import com.google.common.base.Joiner;
 import com.google.common.collect.Iterators;
+import com.google.common.collect.Lists;
 
 public class QFileTestBatch extends TestBatch {
 
@@ -31,7 +35,7 @@ public class QFileTestBatch extends TestBatch {
   private final String queryFilesProperty;
   private final String name;
   private final String moduleName;
-  private final Set<String> tests;
+  private final List<String> tests;
   private final boolean isParallel;
 
   public QFileTestBatch(AtomicInteger batchIdCounter, String testCasePropertyName, String driver,
@@ -41,8 +45,9 @@ public class QFileTestBatch extends TestBatch {
     this.testCasePropertyName = testCasePropertyName;
     this.driver = driver;
     this.queryFilesProperty = queryFilesProperty;
-    this.tests = tests;
-    String name = Joiner.on("-").join(driver, Joiner.on("-").join(
+    // Store as a list to have a consistent order between getTests, and the test argument generation.
+    this.tests = Lists.newArrayList(tests);
+    String name = Joiner.on("-").join(getBatchId(), driver, Joiner.on("-").join(
         Iterators.toArray(Iterators.limit(tests.iterator(), 3), String.class)));
     if(tests.size() > 3) {
       name = Joiner.on("-").join(name, "and", (tests.size() - 3), "more");
@@ -59,13 +64,13 @@ public class QFileTestBatch extends TestBatch {
     return name;
   }
   @Override
-  public String getTestClass() {
-    return driver;
-  }
-  @Override
   public String getTestArguments() {
     return String.format("-D%s=%s -D%s=%s", testCasePropertyName, driver, queryFilesProperty,
         Joiner.on(",").join(tests));
+  }
+
+  public Collection<String> getTests() {
+    return Collections.unmodifiableList(tests);
   }
 
   @Override
@@ -88,6 +93,11 @@ public class QFileTestBatch extends TestBatch {
   @Override
   public int getNumTestsInBatch() {
     return tests.size();
+  }
+
+  @Override
+  public Collection<String> getTestClasses() {
+    return Collections.singleton(driver);
   }
 
   @Override

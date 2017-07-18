@@ -41,6 +41,7 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.common.FileUtils;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
+import org.apache.hadoop.hive.conf.HiveConfUtil;
 import org.apache.hadoop.hive.ql.Context;
 import org.apache.hadoop.hive.ql.DriverContext;
 import org.apache.hadoop.hive.ql.exec.Utilities;
@@ -48,6 +49,7 @@ import org.apache.hadoop.hive.ql.exec.spark.status.SparkJobRef;
 import org.apache.hadoop.hive.ql.exec.spark.status.impl.RemoteSparkJobRef;
 import org.apache.hadoop.hive.ql.exec.spark.status.impl.RemoteSparkJobStatus;
 import org.apache.hadoop.hive.ql.io.HiveKey;
+import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.BaseWork;
 import org.apache.hadoop.hive.ql.plan.SparkWork;
 import org.apache.hadoop.hive.ql.session.SessionState;
@@ -99,7 +101,7 @@ public class RemoteHiveSparkClient implements HiveSparkClient {
     remoteClient = SparkClientFactory.createClient(conf, hiveConf);
 
     if (HiveConf.getBoolVar(hiveConf, ConfVars.HIVE_PREWARM_ENABLED) &&
-        hiveConf.get("spark.master").startsWith("yarn-")) {
+        SparkClientUtilities.isYarnMaster(hiveConf.get("spark.master"))) {
       int minExecutors = getExecutorsToWarm();
       if (minExecutors <= 0) {
         return;
@@ -171,8 +173,10 @@ public class RemoteHiveSparkClient implements HiveSparkClient {
   }
 
   @Override
-  public SparkJobRef execute(final DriverContext driverContext, final SparkWork sparkWork) throws Exception {
-    if (hiveConf.get("spark.master").startsWith("yarn-") && !remoteClient.isActive()) {
+  public SparkJobRef execute(final DriverContext driverContext, final SparkWork sparkWork)
+      throws Exception {
+    if (SparkClientUtilities.isYarnMaster(hiveConf.get("spark.master")) &&
+        !remoteClient.isActive()) {
       // Re-create the remote client if not active any more
       close();
       createRemoteClient();
@@ -191,6 +195,9 @@ public class RemoteHiveSparkClient implements HiveSparkClient {
     refreshLocalResources(sparkWork, hiveConf);
     final JobConf jobConf = new JobConf(hiveConf);
 
+    //update the credential provider location in the jobConf
+    HiveConfUtil.updateJobCredentialProviders(jobConf);
+
     // Create temporary scratch dir
     final Path emptyScratchDir = ctx.getMRTmpPath();
     FileSystem fs = emptyScratchDir.getFileSystem(jobConf);
@@ -201,6 +208,10 @@ public class RemoteHiveSparkClient implements HiveSparkClient {
     byte[] sparkWorkBytes = KryoSerializer.serialize(sparkWork);
 
     JobStatusJob job = new JobStatusJob(jobConfBytes, scratchDirBytes, sparkWorkBytes);
+    if (driverContext.isShutdown()) {
+      throw new HiveException("Operation is cancelled.");
+    }
+
     JobHandle<Serializable> jobHandle = remoteClient.submit(job);
     RemoteSparkJobStatus sparkJobStatus = new RemoteSparkJobStatus(remoteClient, jobHandle, sparkClientTimtout);
     return new RemoteSparkJobRef(hiveConf, jobHandle, sparkJobStatus);
@@ -345,12 +356,9 @@ public class RemoteHiveSparkClient implements HiveSparkClient {
     private void logConfigurations(JobConf localJobConf) {
       if (LOG.isInfoEnabled()) {
         LOG.info("Logging job configuration: ");
-        StringWriter outWriter = new StringWriter();
-        try {
-          Configuration.dumpConfiguration(localJobConf, outWriter);
-        } catch (IOException e) {
-          LOG.warn("Error logging job configuration", e);
-        }
+        StringBuilder outWriter = new StringBuilder();
+        // redact sensitive information before logging
+        HiveConfUtil.dumpConfig(localJobConf, outWriter);
         LOG.info(outWriter.toString());
       }
     }

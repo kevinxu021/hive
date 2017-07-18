@@ -20,6 +20,7 @@ package org.apache.hive.ptest.execution;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -80,10 +81,26 @@ public class TestExecutionPhase extends AbstractTestPhase {
     testBatch = new UnitTestBatch(new AtomicInteger(1), "testcase", Arrays.asList(DRIVER), "fakemodule", false);
     testBatches = Collections.singletonList(testBatch);
   }
+  private void setupUnitTest(int nTests) throws Exception {
+    List<String> testList = new ArrayList<>();
+    for (int i = 0 ; i < nTests ; i++) {
+      testList.add("TestClass-" + i);
+    }
+    testBatch = new UnitTestBatch(new AtomicInteger(1), "testcase", testList, "fakemodule", false);
+    testBatches = Collections.singletonList(testBatch);
+  }
   private void copyTestOutput(String resource, File directory, String name) throws Exception {
     String junitOutput = Templates.readResource(resource);
     File junitOutputFile = new File(Dirs.create(
         new File(directory, name)), "TEST-SomeTest.xml");
+    Files.write(junitOutput.getBytes(Charsets.UTF_8), junitOutputFile);
+  }
+
+  private void copyTestOutput(String resource, File directory, String batchName,
+                              String outputName) throws Exception {
+    String junitOutput = Templates.readResource(resource);
+    File junitOutputFile = new File(Dirs.create(
+        new File(directory, batchName)), outputName);
     Files.write(junitOutput.getBytes(Charsets.UTF_8), junitOutputFile);
   }
   @After
@@ -103,13 +120,13 @@ public class TestExecutionPhase extends AbstractTestPhase {
   public void testFailingQFile() throws Throwable {
     setupQFile(true);
     sshCommandExecutor.putFailure("bash " + LOCAL_DIR + "/" + HOST + "-" + USER +
-        "-0/scratch/hiveptest-" + DRIVER + "-" + QFILENAME + ".sh", 1);
+        "-0/scratch/hiveptest-" + "1-" + DRIVER + "-" + QFILENAME + ".sh", 1);
     copyTestOutput("SomeTest-failure.xml", failedLogDir, testBatch.getName());
     getPhase().execute();
     Assert.assertEquals(1, sshCommandExecutor.getMatchCount());
     Approvals.verify(getExecutedCommands());
     Assert.assertEquals(Sets.newHashSet("SomeTest." + QFILENAME), executedTests);
-    Assert.assertEquals(Sets.newHashSet("SomeTest." + QFILENAME), failedTests);
+    Assert.assertEquals(Sets.newHashSet("SomeTest." + QFILENAME + " (batchId=1)"), failedTests);
   }
   @Test
   public void testPassingUnitTest() throws Throwable {
@@ -130,6 +147,17 @@ public class TestExecutionPhase extends AbstractTestPhase {
     Assert.assertEquals(1, sshCommandExecutor.getMatchCount());
     Approvals.verify(getExecutedCommands());
     Assert.assertEquals(Sets.newHashSet("SomeTest." + QFILENAME), executedTests);
-    Assert.assertEquals(Sets.newHashSet("SomeTest." + QFILENAME), failedTests);
+    Assert.assertEquals(Sets.newHashSet("SomeTest." + QFILENAME + " (batchId=1)"), failedTests);
+  }
+
+  @Test(timeout = 20000)
+  public void testTimedOutUnitTest() throws Throwable {
+    setupUnitTest(3);
+    copyTestOutput("SomeTest-success.xml", succeededLogDir, testBatch.getName(), "TEST-TestClass-0.xml");
+    copyTestOutput("SomeTest-success.xml", succeededLogDir, testBatch.getName(), "TEST-TestClass-1.xml");
+    getPhase().execute();
+    Approvals.verify(getExecutedCommands());
+    Assert.assertEquals(1, failedTests.size());
+    Assert.assertEquals("TestClass-2 - did not produce a TEST-*.xml file (likely timed out) (batchId=1)", failedTests.iterator().next());
   }
 }

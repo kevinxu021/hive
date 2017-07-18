@@ -75,8 +75,32 @@ public class TypeConverter {
     b.put(SqlTypeName.DOUBLE.getName(), new HiveToken(HiveParser.TOK_DOUBLE, "TOK_DOUBLE"));
     b.put(SqlTypeName.DATE.getName(), new HiveToken(HiveParser.TOK_DATE, "TOK_DATE"));
     b.put(SqlTypeName.TIMESTAMP.getName(), new HiveToken(HiveParser.TOK_TIMESTAMP, "TOK_TIMESTAMP"));
-    b.put(SqlTypeName.INTERVAL_YEAR_MONTH.getName(), new HiveToken(HiveParser.TOK_INTERVAL_YEAR_MONTH, "TOK_INTERVAL_YEAR_MONTH"));
-    b.put(SqlTypeName.INTERVAL_DAY_TIME.getName(), new HiveToken(HiveParser.TOK_INTERVAL_DAY_TIME, "TOK_INTERVAL_DAY_TIME"));
+    b.put(SqlTypeName.INTERVAL_YEAR.getName(),
+            new HiveToken(HiveParser.Identifier, serdeConstants.INTERVAL_YEAR_MONTH_TYPE_NAME));
+    b.put(SqlTypeName.INTERVAL_MONTH.getName(),
+            new HiveToken(HiveParser.Identifier, serdeConstants.INTERVAL_YEAR_MONTH_TYPE_NAME));
+    b.put(SqlTypeName.INTERVAL_YEAR_MONTH.getName(),
+            new HiveToken(HiveParser.Identifier, serdeConstants.INTERVAL_YEAR_MONTH_TYPE_NAME));
+    b.put(SqlTypeName.INTERVAL_DAY.getName(),
+            new HiveToken(HiveParser.Identifier, serdeConstants.INTERVAL_DAY_TIME_TYPE_NAME));
+    b.put(SqlTypeName.INTERVAL_DAY_HOUR.getName(),
+            new HiveToken(HiveParser.Identifier, serdeConstants.INTERVAL_DAY_TIME_TYPE_NAME));
+    b.put(SqlTypeName.INTERVAL_DAY_MINUTE.getName(),
+            new HiveToken(HiveParser.Identifier, serdeConstants.INTERVAL_DAY_TIME_TYPE_NAME));
+    b.put(SqlTypeName.INTERVAL_DAY_SECOND.getName(),
+            new HiveToken(HiveParser.Identifier, serdeConstants.INTERVAL_DAY_TIME_TYPE_NAME));
+    b.put(SqlTypeName.INTERVAL_HOUR.getName(),
+            new HiveToken(HiveParser.Identifier, serdeConstants.INTERVAL_DAY_TIME_TYPE_NAME));
+    b.put(SqlTypeName.INTERVAL_HOUR_MINUTE.getName(),
+            new HiveToken(HiveParser.Identifier, serdeConstants.INTERVAL_DAY_TIME_TYPE_NAME));
+    b.put(SqlTypeName.INTERVAL_HOUR_SECOND.getName(),
+            new HiveToken(HiveParser.Identifier, serdeConstants.INTERVAL_DAY_TIME_TYPE_NAME));
+    b.put(SqlTypeName.INTERVAL_MINUTE.getName(),
+            new HiveToken(HiveParser.Identifier, serdeConstants.INTERVAL_DAY_TIME_TYPE_NAME));
+    b.put(SqlTypeName.INTERVAL_MINUTE_SECOND.getName(),
+            new HiveToken(HiveParser.Identifier, serdeConstants.INTERVAL_DAY_TIME_TYPE_NAME));
+    b.put(SqlTypeName.INTERVAL_SECOND.getName(),
+            new HiveToken(HiveParser.Identifier, serdeConstants.INTERVAL_DAY_TIME_TYPE_NAME));
     b.put(SqlTypeName.BINARY.getName(), new HiveToken(HiveParser.TOK_BINARY, "TOK_BINARY"));
     calciteToHiveTypeNameMap = b.build();
   };
@@ -175,6 +199,9 @@ public class TypeConverter {
       break;
     case TIMESTAMP:
       convertedType = dtFactory.createSqlType(SqlTypeName.TIMESTAMP);
+      break;
+    case TIMESTAMPTZ:
+      convertedType = dtFactory.createSqlType(SqlTypeName.OTHER);
       break;
     case INTERVAL_YEAR_MONTH:
       convertedType = dtFactory.createSqlIntervalType(
@@ -301,9 +328,20 @@ public class TypeConverter {
       return TypeInfoFactory.dateTypeInfo;
     case TIMESTAMP:
       return TypeInfoFactory.timestampTypeInfo;
+    case INTERVAL_YEAR:
+    case INTERVAL_MONTH:
     case INTERVAL_YEAR_MONTH:
       return TypeInfoFactory.intervalYearMonthTypeInfo;
-    case INTERVAL_DAY_TIME:
+    case INTERVAL_DAY:
+    case INTERVAL_DAY_HOUR:
+    case INTERVAL_DAY_MINUTE:
+    case INTERVAL_DAY_SECOND:
+    case INTERVAL_HOUR:
+    case INTERVAL_HOUR_MINUTE:
+    case INTERVAL_HOUR_SECOND:
+    case INTERVAL_MINUTE:
+    case INTERVAL_MINUTE_SECOND:
+    case INTERVAL_SECOND:
       return TypeInfoFactory.intervalDayTimeTypeInfo;
     case BINARY:
       return TypeInfoFactory.binaryTypeInfo;

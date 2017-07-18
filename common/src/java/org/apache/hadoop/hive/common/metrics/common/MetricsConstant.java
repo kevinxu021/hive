@@ -22,6 +22,9 @@ package org.apache.hadoop.hive.common.metrics.common;
  */
 public class MetricsConstant {
 
+  public static final String API_PREFIX = "api_";
+  public static final String ACTIVE_CALLS = "active_calls_";
+
   public static final String JVM_PAUSE_INFO = "jvm.pause.info-threshold";
   public static final String JVM_PAUSE_WARN = "jvm.pause.warn-threshold";
   public static final String JVM_EXTRA_SLEEP = "jvm.pause.extraSleepTime";
@@ -67,5 +70,15 @@ public class MetricsConstant {
   public static final String HIVE_SPARK_TASKS = "hive_spark_tasks";
   // The number of tez tasks executed by the HiveServer2 since the last restart
   public static final String HIVE_TEZ_TASKS = "hive_tez_tasks";
+  public static final String HS2_OPEN_SESSIONS = "hs2_open_sessions";
+  public static final String HS2_ACTIVE_SESSIONS = "hs2_active_sessions";
+  public static final String HS2_ABANDONED_SESSIONS = "hs2_abandoned_sessions";
+  public static final String HS2_AVG_OPEN_SESSION_TIME = "hs2_avg_open_session_time";
+  public static final String HS2_AVG_ACTIVE_SESSION_TIME = "hs2_avg_active_session_time";
 
+  public static final String HS2_SUBMITTED_QURIES = "hs2_submitted_queries";
+  public static final String HS2_COMPILING_QUERIES = "hs2_compiling_queries";
+  public static final String HS2_EXECUTING_QUERIES = "hs2_executing_queries";
+  public static final String HS2_FAILED_QUERIES = "hs2_failed_queries";
+  public static final String HS2_SUCCEEDED_QUERIES = "hs2_succeeded_queries";
 }

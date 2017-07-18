@@ -18,20 +18,7 @@
 
 package org.apache.hadoop.hive.ql.exec;
 
-import static org.apache.hadoop.hive.conf.HiveConf.ConfVars.HIVE_TEMPORARY_TABLE_STORAGE;
-
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.io.Serializable;
-import java.io.StringWriter;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Properties;
-import java.util.Set;
-
+import com.google.common.collect.Lists;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
@@ -39,10 +26,12 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.common.FileUtils;
 import org.apache.hadoop.hive.common.StatsSetupConst;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.conf.HiveConfUtil;
 import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
 import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.ErrorMsg;
 import org.apache.hadoop.hive.ql.io.AcidUtils;
+import org.apache.hadoop.hive.ql.io.BucketCodec;
 import org.apache.hadoop.hive.ql.io.HiveFileFormatUtils;
 import org.apache.hadoop.hive.ql.io.HiveKey;
 import org.apache.hadoop.hive.ql.io.HiveOutputFormat;
@@ -62,6 +51,7 @@ import org.apache.hadoop.hive.ql.plan.SkewedColumnPositionPair;
 import org.apache.hadoop.hive.ql.plan.api.OperatorType;
 import org.apache.hadoop.hive.ql.stats.StatsCollectionContext;
 import org.apache.hadoop.hive.ql.stats.StatsPublisher;
+import org.apache.hadoop.hive.serde2.ColumnProjectionUtils;
 import org.apache.hadoop.hive.serde2.SerDeException;
 import org.apache.hadoop.hive.serde2.SerDeStats;
 import org.apache.hadoop.hive.serde2.Serializer;
@@ -72,7 +62,6 @@ import org.apache.hadoop.hive.serde2.objectinspector.StructField;
 import org.apache.hadoop.hive.serde2.objectinspector.StructObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.SubStructObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.primitive.IntObjectInspector;
-import org.apache.hadoop.hive.serde2.thrift.ThriftJDBCBinarySerDe;
 import org.apache.hadoop.hive.shims.HadoopShims.StoragePolicyShim;
 import org.apache.hadoop.hive.shims.HadoopShims.StoragePolicyValue;
 import org.apache.hadoop.hive.shims.ShimLoader;
@@ -84,7 +73,18 @@ import org.apache.hive.common.util.HiveStringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.collect.Lists;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+import java.util.Set;
+
+import static org.apache.hadoop.hive.conf.HiveConf.ConfVars.HIVE_TEMPORARY_TABLE_STORAGE;
 
 /**
  * File Sink operator implementation.
@@ -93,8 +93,6 @@ public class FileSinkOperator extends TerminalOperator<FileSinkDesc> implements
     Serializable {
 
   public static final Logger LOG = LoggerFactory.getLogger(FileSinkOperator.class);
-  private static final boolean isInfoEnabled = LOG.isInfoEnabled();
-  private static final boolean isDebugEnabled = LOG.isDebugEnabled();
 
   protected transient HashMap<String, FSPaths> valToPaths;
   protected transient int numDynParts;
@@ -160,7 +158,7 @@ public class FileSinkOperator extends TerminalOperator<FileSinkDesc> implements
       finalPaths = new Path[numFiles];
       outWriters = new RecordWriter[numFiles];
       updaters = new RecordUpdater[numFiles];
-      if (isDebugEnabled) {
+      if (LOG.isDebugEnabled()) {
         LOG.debug("Created slots for  " + numFiles);
       }
       stat = new Stat();
@@ -230,8 +228,18 @@ public class FileSinkOperator extends TerminalOperator<FileSinkDesc> implements
             }
           }
           if (needToRename && outPaths[idx] != null && !fs.rename(outPaths[idx], finalPaths[idx])) {
-            throw new HiveException("Unable to rename output from: " +
+            FileStatus fileStatus = FileUtils.getFileStatusOrNull(fs, finalPaths[idx]);
+            if (fileStatus != null) {
+              LOG.warn("Target path " + finalPaths[idx] + " with a size " + fileStatus.getLen() + " exists. Trying to delete it.");
+              if (!fs.delete(finalPaths[idx], true)) {
+                throw new HiveException("Unable to delete existing target output: " + finalPaths[idx]);
+              }
+            }
+
+            if (!fs.rename(outPaths[idx], finalPaths[idx])) {
+              throw new HiveException("Unable to rename output from: " +
                 outPaths[idx] + " to: " + finalPaths[idx]);
+            }
           }
           updateProgress();
         } catch (IOException e) {
@@ -347,8 +355,16 @@ public class FileSinkOperator extends TerminalOperator<FileSinkDesc> implements
       taskId = Utilities.getTaskId(hconf);
       initializeSpecPath();
       fs = specPath.getFileSystem(hconf);
+
+      if (hconf instanceof JobConf) {
+        jc = (JobConf) hconf;
+      } else {
+        // test code path
+        jc = new JobConf(hconf);
+      }
+
       try {
-        createHiveOutputFormat(hconf);
+        createHiveOutputFormat(jc);
       } catch (HiveException ex) {
         logOutputFormatError(hconf, ex);
         throw ex;
@@ -357,10 +373,10 @@ public class FileSinkOperator extends TerminalOperator<FileSinkDesc> implements
       parent = Utilities.toTempPath(conf.getDirName());
       statsFromRecordWriter = new boolean[numFiles];
       serializer = (Serializer) conf.getTableInfo().getDeserializerClass().newInstance();
-      serializer.initialize(hconf, conf.getTableInfo().getProperties());
+      serializer.initialize(unsetNestedColumnPaths(hconf), conf.getTableInfo().getProperties());
       outputClass = serializer.getSerializedClass();
 
-      if (isLogInfoEnabled) {
+      if (LOG.isInfoEnabled()) {
         LOG.info("Using serializer : " + serializer + " and formatter : " + hiveOutputFormat +
             (isCompressed ? " with compression" : ""));
       }
@@ -369,12 +385,6 @@ public class FileSinkOperator extends TerminalOperator<FileSinkDesc> implements
       // half of the script.timeout but less than script.timeout, we will still
       // be able to report progress.
       timeOut = hconf.getInt("mapred.healthChecker.script.timeout", 600000) / 2;
-      if (hconf instanceof JobConf) {
-        jc = (JobConf) hconf;
-      } else {
-        // test code path
-        jc = new JobConf(hconf);
-      }
 
       if (multiFileSpray) {
         partitionEval = new ExprNodeEvaluator[conf.getPartitionCols().size()];
@@ -454,13 +464,10 @@ public class FileSinkOperator extends TerminalOperator<FileSinkDesc> implements
   }
 
   private void logOutputFormatError(Configuration hconf, HiveException ex) {
-    StringWriter errorWriter = new StringWriter();
+    StringBuilder errorWriter = new StringBuilder();
     errorWriter.append("Failed to create output format; configuration: ");
-    try {
-      Configuration.dumpConfiguration(hconf, errorWriter);
-    } catch (IOException ex2) {
-      errorWriter.append("{ failed to dump configuration: " + ex2.getMessage() + " }");
-    }
+    // redact sensitive information before logging
+    HiveConfUtil.dumpConfig(hconf, errorWriter);
     Properties tdp = null;
     if (this.conf.getTableInfo() != null
         && (tdp = this.conf.getTableInfo().getProperties()) != null) {
@@ -491,7 +498,7 @@ public class FileSinkOperator extends TerminalOperator<FileSinkDesc> implements
     this.maxPartitions = dpCtx.getMaxPartitionsPerNode();
 
     assert numDynParts == dpColNames.size()
-        : "number of dynamic paritions should be the same as the size of DP mapping";
+        : "number of dynamic partitions should be the same as the size of DP mapping";
 
     if (dpColNames != null && dpColNames.size() > 0) {
       this.bDynParts = true;
@@ -511,13 +518,13 @@ public class FileSinkOperator extends TerminalOperator<FileSinkDesc> implements
       Set<Integer> seenBuckets = new HashSet<Integer>();
       for (int idx = 0; idx < totalFiles; idx++) {
         if (this.getExecContext() != null && this.getExecContext().getFileId() != null) {
-          if (isInfoEnabled) {
+          if (LOG.isInfoEnabled()) {
             LOG.info("replace taskId from execContext ");
           }
 
           taskId = Utilities.replaceTaskIdFromFilename(taskId, this.getExecContext().getFileId());
 
-          if (isInfoEnabled) {
+          if (LOG.isInfoEnabled()) {
             LOG.info("new taskId: FS " + taskId);
           }
 
@@ -573,11 +580,11 @@ public class FileSinkOperator extends TerminalOperator<FileSinkDesc> implements
     try {
       if (isNativeTable) {
         fsp.finalPaths[filesIdx] = fsp.getFinalPath(taskId, fsp.tmpPath, null);
-        if (isInfoEnabled) {
+        if (LOG.isInfoEnabled()) {
           LOG.info("Final Path: FS " + fsp.finalPaths[filesIdx]);
         }
         fsp.outPaths[filesIdx] = fsp.getTaskOutPath(taskId);
-        if (isInfoEnabled) {
+        if (LOG.isInfoEnabled()) {
           LOG.info("Writing to temp file: FS " + fsp.outPaths[filesIdx]);
         }
       } else {
@@ -594,7 +601,7 @@ public class FileSinkOperator extends TerminalOperator<FileSinkDesc> implements
         fsp.finalPaths[filesIdx] = fsp.getFinalPath(taskId, fsp.tmpPath, extension);
       }
 
-      if (isInfoEnabled) {
+      if (LOG.isInfoEnabled()) {
         LOG.info("New Final Path: FS " + fsp.finalPaths[filesIdx]);
       }
 
@@ -734,7 +741,7 @@ public class FileSinkOperator extends TerminalOperator<FileSinkDesc> implements
         fpaths.stat.addToStat(StatsSetupConst.ROW_COUNT, 1);
       }
 
-      if ((++numRows == cntr) && isLogInfoEnabled) {
+      if ((++numRows == cntr) && LOG.isInfoEnabled()) {
         cntr = logEveryNRows == 0 ? cntr * 10 : numRows + logEveryNRows;
         if (cntr < 0 || numRows < 0) {
           cntr = 0;
@@ -761,15 +768,17 @@ public class FileSinkOperator extends TerminalOperator<FileSinkDesc> implements
         // Find the bucket id, and switch buckets if need to
         ObjectInspector rowInspector = bDynParts ? subSetOI : outputObjInspector;
         Object recId = ((StructObjectInspector)rowInspector).getStructFieldData(row, recIdField);
-        int bucketNum =
+        int bucketProperty =
             bucketInspector.get(recIdInspector.getStructFieldData(recId, bucketField));
+        int bucketNum = 
+          BucketCodec.determineVersion(bucketProperty).decodeWriterId(bucketProperty);
         if (fpaths.acidLastBucket != bucketNum) {
           fpaths.acidLastBucket = bucketNum;
           // Switch files
           fpaths.updaters[conf.getDpSortState().equals(DPSortState.PARTITION_BUCKET_SORTED) ? 0 : ++fpaths.acidFileOffset] = HiveFileFormatUtils.getAcidRecordUpdater(
               jc, conf.getTableInfo(), bucketNum, conf, fpaths.outPaths[conf.getDpSortState().equals(DPSortState.PARTITION_BUCKET_SORTED) ? 0 :fpaths.acidFileOffset],
               rowInspector, reporter, 0);
-          if (isDebugEnabled) {
+          if (LOG.isDebugEnabled()) {
             LOG.debug("Created updater for bucket number " + bucketNum + " using file " +
                 fpaths.outPaths[conf.getDpSortState().equals(DPSortState.PARTITION_BUCKET_SORTED) ? 0 :fpaths.acidFileOffset]);
           }
@@ -1023,9 +1032,7 @@ public class FileSinkOperator extends TerminalOperator<FileSinkDesc> implements
       // If serializer is ThriftJDBCBinarySerDe, then it buffers rows to a certain limit (hive.server2.thrift.resultset.max.fetch.size)
       // and serializes the whole batch when the buffer is full. The serialize returns null if the buffer is not full
       // (the size of buffer is kept track of in the ThriftJDBCBinarySerDe).
-      if (conf.isHiveServerQuery() && HiveConf.getBoolVar(hconf,
-          HiveConf.ConfVars.HIVE_SERVER2_THRIFT_RESULTSET_SERIALIZE_IN_TASKS) &&
-          serializer.getClass().getName().equalsIgnoreCase(ThriftJDBCBinarySerDe.class.getName())) {
+      if (conf.isUsingThriftJDBCBinarySerDe()) {
           try {
             recordValue = serializer.serialize(null, inputObjInspectors[0]);
             if ( null != fpaths ) {
@@ -1153,12 +1160,12 @@ public class FileSinkOperator extends TerminalOperator<FileSinkDesc> implements
     }
   }
 
-  private void createHiveOutputFormat(Configuration hconf) throws HiveException {
+  private void createHiveOutputFormat(JobConf job) throws HiveException {
     if (hiveOutputFormat == null) {
-      Utilities.copyTableJobPropertiesToConf(conf.getTableInfo(), hconf);
+      Utilities.copyTableJobPropertiesToConf(conf.getTableInfo(), job);
     }
     try {
-      hiveOutputFormat = HiveFileFormatUtils.getHiveOutputFormat(hconf, getConf().getTableInfo());
+      hiveOutputFormat = HiveFileFormatUtils.getHiveOutputFormat(job, getConf().getTableInfo());
     } catch (Throwable t) {
       throw (t instanceof HiveException) ? (HiveException)t : new HiveException(t);
     }
@@ -1291,5 +1298,18 @@ public class FileSinkOperator extends TerminalOperator<FileSinkDesc> implements
       }
     }
     return new String[] {fspKey, null};
+  }
+
+  /**
+   * Check if nested column paths is set for 'conf'.
+   * If set, create a copy of 'conf' with this property unset.
+   */
+  private Configuration unsetNestedColumnPaths(Configuration conf) {
+    if (conf.get(ColumnProjectionUtils.READ_NESTED_COLUMN_PATH_CONF_STR) != null) {
+      Configuration confCopy = new Configuration(conf);
+      confCopy.unset(ColumnProjectionUtils.READ_NESTED_COLUMN_PATH_CONF_STR);
+      return confCopy;
+    }
+    return conf;
   }
 }

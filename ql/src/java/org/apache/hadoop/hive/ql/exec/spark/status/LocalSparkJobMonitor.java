@@ -47,7 +47,7 @@ public class LocalSparkJobMonitor extends SparkJobMonitor {
     perfLogger.PerfLogBegin(CLASS_NAME, PerfLogger.SPARK_RUN_JOB);
     perfLogger.PerfLogBegin(CLASS_NAME, PerfLogger.SPARK_SUBMIT_TO_RUNNING);
 
-    long startTime = System.currentTimeMillis();
+    startTime = System.currentTimeMillis();
 
     while (true) {
       try {
@@ -58,7 +58,7 @@ public class LocalSparkJobMonitor extends SparkJobMonitor {
 
         if (state == null) {
           long timeCount = (System.currentTimeMillis() - startTime)/1000;
-          if (timeCount > monitorTimeoutInteval) {
+          if (timeCount > monitorTimeoutInterval) {
             console.printError("Job hasn't been submitted after " + timeCount + "s. Aborting it.");
             console.printError("Status: " + state);
             running = false;
@@ -128,6 +128,7 @@ public class LocalSparkJobMonitor extends SparkJobMonitor {
         console.printError(msg, "\n" + org.apache.hadoop.util.StringUtils.stringifyException(e));
         rc = 1;
         done = true;
+        sparkJobStatus.setError(e);
       } finally {
         if (done) {
           break;

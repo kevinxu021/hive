@@ -21,9 +21,9 @@ package org.apache.hadoop.hive.ql.parse;
 import org.antlr.runtime.tree.Tree;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.QueryState;
-import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.HiveOperation;
-import org.apache.hadoop.hive.ql.session.SessionState;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.HashMap;
 
@@ -32,6 +32,7 @@ import java.util.HashMap;
  *
  */
 public final class SemanticAnalyzerFactory {
+  static final private Logger LOG = LoggerFactory.getLogger(SemanticAnalyzerFactory.class);
 
   static HashMap<Integer, HiveOperation> commandType = new HashMap<Integer, HiveOperation>();
   static HashMap<Integer, HiveOperation[]> tablePartitionCommandType = new HashMap<Integer, HiveOperation[]>();
@@ -78,6 +79,7 @@ public final class SemanticAnalyzerFactory {
     commandType.put(HiveParser.TOK_SHOWLOCKS, HiveOperation.SHOWLOCKS);
     commandType.put(HiveParser.TOK_SHOWDBLOCKS, HiveOperation.SHOWLOCKS);
     commandType.put(HiveParser.TOK_SHOWCONF, HiveOperation.SHOWCONF);
+    commandType.put(HiveParser.TOK_SHOWVIEWS, HiveOperation.SHOWVIEWS);
     commandType.put(HiveParser.TOK_CREATEFUNCTION, HiveOperation.CREATEFUNCTION);
     commandType.put(HiveParser.TOK_DROPFUNCTION, HiveOperation.DROPFUNCTION);
     commandType.put(HiveParser.TOK_RELOADFUNCTION, HiveOperation.RELOADFUNCTION);
@@ -127,6 +129,9 @@ public final class SemanticAnalyzerFactory {
     commandType.put(HiveParser.TOK_COMMIT, HiveOperation.COMMIT);
     commandType.put(HiveParser.TOK_ROLLBACK, HiveOperation.ROLLBACK);
     commandType.put(HiveParser.TOK_SET_AUTOCOMMIT, HiveOperation.SET_AUTOCOMMIT);
+    commandType.put(HiveParser.TOK_REPL_DUMP, HiveOperation.REPLDUMP);
+    commandType.put(HiveParser.TOK_REPL_LOAD, HiveOperation.REPLLOAD);
+    commandType.put(HiveParser.TOK_REPL_STATUS, HiveOperation.REPLSTATUS);
   }
 
   static {
@@ -166,7 +171,22 @@ public final class SemanticAnalyzerFactory {
         HiveOperation.ALTERTABLE_UPDATEPARTSTATS});
   }
 
-  public static BaseSemanticAnalyzer get(QueryState queryState, ASTNode tree)
+  
+  public static BaseSemanticAnalyzer get(QueryState queryState, ASTNode tree) throws SemanticException {
+    BaseSemanticAnalyzer sem = getInternal(queryState, tree);
+    if(queryState.getHiveOperation() == null) {
+      String query = queryState.getQueryString();
+      if(query != null && query.length() > 30) {
+        query = query.substring(0, 30);
+      }
+      String msg = "Unknown HiveOperation for query='" + query + "' queryId=" + queryState.getQueryId();
+      //throw new IllegalStateException(msg);
+      LOG.debug(msg);
+    }
+    return sem;
+  }
+  
+  private static BaseSemanticAnalyzer getInternal(QueryState queryState, ASTNode tree)
       throws SemanticException {
     if (tree.getToken() == null) {
       throw new RuntimeException("Empty Syntax Tree");
@@ -184,6 +204,12 @@ public final class SemanticAnalyzerFactory {
         return new ExportSemanticAnalyzer(queryState);
       case HiveParser.TOK_IMPORT:
         return new ImportSemanticAnalyzer(queryState);
+      case HiveParser.TOK_REPL_DUMP:
+        return new ReplicationSemanticAnalyzer(queryState);
+      case HiveParser.TOK_REPL_LOAD:
+        return new ReplicationSemanticAnalyzer(queryState);
+      case HiveParser.TOK_REPL_STATUS:
+        return new ReplicationSemanticAnalyzer(queryState);
       case HiveParser.TOK_ALTERTABLE: {
         Tree child = tree.getChild(1);
         switch (child.getType()) {
@@ -256,6 +282,7 @@ public final class SemanticAnalyzerFactory {
       case HiveParser.TOK_SHOW_TRANSACTIONS:
       case HiveParser.TOK_ABORT_TRANSACTIONS:
       case HiveParser.TOK_SHOWCONF:
+      case HiveParser.TOK_SHOWVIEWS:
       case HiveParser.TOK_CREATEINDEX:
       case HiveParser.TOK_DROPINDEX:
       case HiveParser.TOK_ALTERTABLE_CLUSTER_SORT:
@@ -294,6 +321,7 @@ public final class SemanticAnalyzerFactory {
 
       case HiveParser.TOK_UPDATE_TABLE:
       case HiveParser.TOK_DELETE_FROM:
+      case HiveParser.TOK_MERGE:
         return new UpdateDeleteSemanticAnalyzer(queryState);
 
       case HiveParser.TOK_START_TRANSACTION:

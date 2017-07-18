@@ -21,11 +21,13 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.List;
 
+import org.apache.calcite.adapter.druid.DruidTable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.druid.DruidStorageHandlerUtils;
-import org.apache.hadoop.hive.ql.optimizer.calcite.druid.DruidTable;
+import org.apache.hadoop.hive.serde2.typeinfo.PrimitiveTypeInfo;
 import org.apache.hadoop.io.NullWritable;
 import org.apache.hadoop.mapreduce.InputSplit;
+import org.joda.time.format.ISODateTimeFormat;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 
@@ -42,7 +44,13 @@ public class DruidGroupByQueryRecordReader
         extends DruidQueryRecordReader<GroupByQuery, Row> {
 
   private Row current;
+
   private int[] indexes = new int[0];
+
+  // Grouping dimensions can have different types if we are grouping using an
+  // extraction function
+  private PrimitiveTypeInfo[] dimensionTypes;
+
   // Row objects returned by GroupByQuery have different access paths depending on
   // whether the result for the metric is a Float or a Long, thus we keep track
   // using these converters
@@ -51,6 +59,7 @@ public class DruidGroupByQueryRecordReader
   @Override
   public void initialize(InputSplit split, Configuration conf) throws IOException {
     super.initialize(split, conf);
+    initDimensionTypes();
     initExtractors();
   }
 
@@ -62,11 +71,21 @@ public class DruidGroupByQueryRecordReader
   @Override
   protected List<Row> createResultsList(InputStream content) throws IOException {
     return DruidStorageHandlerUtils.SMILE_MAPPER.readValue(content,
-            new TypeReference<List<Row>>(){});
+            new TypeReference<List<Row>>() {
+            }
+    );
+  }
+
+  private void initDimensionTypes() throws IOException {
+    dimensionTypes = new PrimitiveTypeInfo[query.getDimensions().size()];
+    for (int i = 0; i < query.getDimensions().size(); i++) {
+      dimensionTypes[i] = DruidSerDeUtils.extractTypeFromDimension(query.getDimensions().get(i));
+    }
   }
 
   private void initExtractors() throws IOException {
-    extractors = new Extract[query.getAggregatorSpecs().size() + query.getPostAggregatorSpecs().size()];
+    extractors = new Extract[query.getAggregatorSpecs().size() + query.getPostAggregatorSpecs()
+            .size()];
     int counter = 0;
     for (int i = 0; i < query.getAggregatorSpecs().size(); i++, counter++) {
       AggregatorFactory af = query.getAggregatorSpecs().get(i);
@@ -94,7 +113,7 @@ public class DruidGroupByQueryRecordReader
         indexes[i]--;
         for (int j = i + 1; j < indexes.length; j++) {
           indexes[j] = current.getDimension(
-                  query.getDimensions().get(j).getDimension()).size() - 1;
+                  query.getDimensions().get(j).getOutputName()).size() - 1;
         }
         return true;
       }
@@ -103,9 +122,9 @@ public class DruidGroupByQueryRecordReader
     if (results.hasNext()) {
       current = results.next();
       indexes = new int[query.getDimensions().size()];
-      for (int i=0; i < query.getDimensions().size(); i++) {
+      for (int i = 0; i < query.getDimensions().size(); i++) {
         DimensionSpec ds = query.getDimensions().get(i);
-        indexes[i] = current.getDimension(ds.getDimension()).size() - 1;
+        indexes[i] = current.getDimension(ds.getOutputName()).size() - 1;
       }
       return true;
     }
@@ -124,11 +143,29 @@ public class DruidGroupByQueryRecordReader
     // 1) The timestamp column
     value.getValue().put(DruidTable.DEFAULT_TIMESTAMP_COLUMN, current.getTimestamp().getMillis());
     // 2) The dimension columns
-    for (int i=0; i < query.getDimensions().size(); i++) {
+    for (int i = 0; i < query.getDimensions().size(); i++) {
       DimensionSpec ds = query.getDimensions().get(i);
-      List<String> dims = current.getDimension(ds.getDimension());
-      int pos = dims.size() - indexes[i] - 1;
-      value.getValue().put(ds.getOutputName(), dims.get(pos));
+      List<String> dims = current.getDimension(ds.getOutputName());
+      if (dims.size() == 0) {
+        // NULL value for dimension
+        value.getValue().put(ds.getOutputName(), null);
+      } else {
+        int pos = dims.size() - indexes[i] - 1;
+        Object val;
+        switch (dimensionTypes[i].getPrimitiveCategory()) {
+          case TIMESTAMP:
+            // FLOOR extraction function
+            val = ISODateTimeFormat.dateTimeParser().parseMillis((String) dims.get(pos));
+            break;
+          case INT:
+            // EXTRACT extraction function
+            val = Integer.valueOf((String) dims.get(pos));
+            break;
+          default:
+            val = dims.get(pos);
+        }
+        value.getValue().put(ds.getOutputName(), val);
+      }
     }
     int counter = 0;
     // 3) The aggregation columns
@@ -158,11 +195,29 @@ public class DruidGroupByQueryRecordReader
       // 1) The timestamp column
       value.getValue().put(DruidTable.DEFAULT_TIMESTAMP_COLUMN, current.getTimestamp().getMillis());
       // 2) The dimension columns
-      for (int i=0; i < query.getDimensions().size(); i++) {
+      for (int i = 0; i < query.getDimensions().size(); i++) {
         DimensionSpec ds = query.getDimensions().get(i);
-        List<String> dims = current.getDimension(ds.getDimension());
-        int pos = dims.size() - indexes[i] - 1;
-        value.getValue().put(ds.getOutputName(), dims.get(pos));
+        List<String> dims = current.getDimension(ds.getOutputName());
+        if (dims.size() == 0) {
+          // NULL value for dimension
+          value.getValue().put(ds.getOutputName(), null);
+        } else {
+          int pos = dims.size() - indexes[i] - 1;
+          Object val;
+          switch (dimensionTypes[i].getPrimitiveCategory()) {
+            case TIMESTAMP:
+              // FLOOR extraction function
+              val = ISODateTimeFormat.dateTimeParser().parseMillis((String) dims.get(pos));
+              break;
+            case INT:
+              // EXTRACT extraction function
+              val = Integer.valueOf((String) dims.get(pos));
+              break;
+            default:
+              val = dims.get(pos);
+          }
+          value.getValue().put(ds.getOutputName(), val);
+        }
       }
       int counter = 0;
       // 3) The aggregation columns

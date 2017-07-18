@@ -8,6 +8,8 @@ PREHOOK: type: DESCFUNCTION
 POSTHOOK: query: describe function extended between
 POSTHOOK: type: DESCFUNCTION
 between a [NOT] BETWEEN b AND c - evaluate if a is [not] in between b and c
+Function class:org.apache.hadoop.hive.ql.udf.generic.GenericUDFBetween
+Function type:BUILTIN
 PREHOOK: query: explain SELECT * FROM src where key + 100 between (150 + -50) AND (150 + 50) LIMIT 20
 PREHOOK: type: QUERY
 POSTHOOK: query: explain SELECT * FROM src where key + 100 between (150 + -50) AND (150 + 50) LIMIT 20
@@ -24,12 +26,12 @@ STAGE PLANS:
           alias: src
           Statistics: Num rows: 500 Data size: 5312 Basic stats: COMPLETE Column stats: NONE
           Filter Operator
-            predicate: (UDFToDouble(key) + 100.0) BETWEEN 100 AND 200 (type: boolean)
-            Statistics: Num rows: 250 Data size: 2656 Basic stats: COMPLETE Column stats: NONE
+            predicate: (UDFToDouble(key) + 100.0) BETWEEN 100.0 AND 200.0 (type: boolean)
+            Statistics: Num rows: 55 Data size: 584 Basic stats: COMPLETE Column stats: NONE
             Select Operator
               expressions: key (type: string), value (type: string)
               outputColumnNames: _col0, _col1
-              Statistics: Num rows: 250 Data size: 2656 Basic stats: COMPLETE Column stats: NONE
+              Statistics: Num rows: 55 Data size: 584 Basic stats: COMPLETE Column stats: NONE
               Limit
                 Number of rows: 20
                 Statistics: Num rows: 20 Data size: 200 Basic stats: COMPLETE Column stats: NONE
@@ -79,12 +81,12 @@ STAGE PLANS:
           alias: src
           Statistics: Num rows: 500 Data size: 5312 Basic stats: COMPLETE Column stats: NONE
           Filter Operator
-            predicate: (UDFToDouble(key) + 100.0) NOT BETWEEN 100 AND 200 (type: boolean)
-            Statistics: Num rows: 250 Data size: 2656 Basic stats: COMPLETE Column stats: NONE
+            predicate: (not (UDFToDouble(key) + 100.0) BETWEEN 100.0 AND 200.0) (type: boolean)
+            Statistics: Num rows: 445 Data size: 4727 Basic stats: COMPLETE Column stats: NONE
             Select Operator
               expressions: key (type: string), value (type: string)
               outputColumnNames: _col0, _col1
-              Statistics: Num rows: 250 Data size: 2656 Basic stats: COMPLETE Column stats: NONE
+              Statistics: Num rows: 445 Data size: 4727 Basic stats: COMPLETE Column stats: NONE
               Limit
                 Number of rows: 20
                 Statistics: Num rows: 20 Data size: 200 Basic stats: COMPLETE Column stats: NONE

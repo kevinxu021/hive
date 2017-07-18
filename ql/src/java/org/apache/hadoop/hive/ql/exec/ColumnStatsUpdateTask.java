@@ -93,12 +93,14 @@ public class ColumnStatsUpdateTask extends Task<ColumnStatsUpdateWork> {
     statsObj.setColName(colName.get(0));
 
     statsObj.setColType(colType.get(0));
-    
+
     ColumnStatisticsData statsData = new ColumnStatisticsData();
-    
+
     String columnType = colType.get(0);
 
-    if (columnType.equalsIgnoreCase("long")) {
+    if (columnType.equalsIgnoreCase("long") || columnType.equalsIgnoreCase("tinyint")
+        || columnType.equalsIgnoreCase("smallint") || columnType.equalsIgnoreCase("int")
+        || columnType.equalsIgnoreCase("bigint") || columnType.equalsIgnoreCase("timestamp")) {
       LongColumnStatsData longStats = new LongColumnStatsData();
       longStats.setNumNullsIsSet(false);
       longStats.setNumDVsIsSet(false);
@@ -119,11 +121,10 @@ public class ColumnStatsUpdateTask extends Task<ColumnStatsUpdateWork> {
         } else {
           throw new SemanticException("Unknown stat");
         }
-
       }
       statsData.setLongStats(longStats);
       statsObj.setStatsData(statsData);
-    } else if (columnType.equalsIgnoreCase("double")) {
+    } else if (columnType.equalsIgnoreCase("double") || columnType.equalsIgnoreCase("float")) {
       DoubleColumnStatsData doubleStats = new DoubleColumnStatsData();
       doubleStats.setNumNullsIsSet(false);
       doubleStats.setNumDVsIsSet(false);
@@ -147,7 +148,8 @@ public class ColumnStatsUpdateTask extends Task<ColumnStatsUpdateWork> {
       }
       statsData.setDoubleStats(doubleStats);
       statsObj.setStatsData(statsData);
-    } else if (columnType.equalsIgnoreCase("string")) {
+    } else if (columnType.equalsIgnoreCase("string") || columnType.toLowerCase().startsWith("char")
+              || columnType.toLowerCase().startsWith("varchar")) { //char(x),varchar(x) types
       StringColumnStatsData stringStats = new StringColumnStatsData();
       stringStats.setMaxColLenIsSet(false);
       stringStats.setAvgColLenIsSet(false);
@@ -213,7 +215,7 @@ public class ColumnStatsUpdateTask extends Task<ColumnStatsUpdateWork> {
       }
       statsData.setBinaryStats(binaryStats);
       statsObj.setStatsData(statsData);
-    } else if (columnType.equalsIgnoreCase("decimal")) {
+    } else if (columnType.toLowerCase().startsWith("decimal")) { //decimal(a,b) type
       DecimalColumnStatsData decimalStats = new DecimalColumnStatsData();
       decimalStats.setNumNullsIsSet(false);
       decimalStats.setNumDVsIsSet(false);

@@ -21,6 +21,7 @@ package org.apache.hive.service.cli.thrift;
 import java.util.List;
 import java.util.Map;
 
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hive.service.auth.HiveAuthFactory;
 import org.apache.hive.service.cli.CLIServiceClient;
 import org.apache.hive.service.cli.FetchOrientation;
@@ -83,6 +84,8 @@ import org.apache.hive.service.rpc.thrift.TStatus;
 import org.apache.hive.service.rpc.thrift.TStatusCode;
 import org.apache.thrift.TException;
 
+import com.google.common.annotations.VisibleForTesting;
+
 /**
  * ThriftCLIServiceClient.
  *
@@ -90,8 +93,14 @@ import org.apache.thrift.TException;
 public class ThriftCLIServiceClient extends CLIServiceClient {
   private final TCLIService.Iface cliService;
 
-  public ThriftCLIServiceClient(TCLIService.Iface cliService) {
+  public ThriftCLIServiceClient(TCLIService.Iface cliService, Configuration conf) {
+    super(conf);
     this.cliService = cliService;
+  }
+
+  @VisibleForTesting
+  public ThriftCLIServiceClient(TCLIService.Iface cliService) {
+    this(cliService, new Configuration());
   }
 
   public void checkStatus(TStatus status) throws HiveSQLException {
@@ -358,9 +367,10 @@ public class ThriftCLIServiceClient extends CLIServiceClient {
    * @see org.apache.hive.service.cli.ICLIService#getOperationStatus(org.apache.hive.service.cli.OperationHandle)
    */
   @Override
-  public OperationStatus getOperationStatus(OperationHandle opHandle) throws HiveSQLException {
+  public OperationStatus getOperationStatus(OperationHandle opHandle, boolean getProgressUpdate) throws HiveSQLException {
     try {
       TGetOperationStatusReq req = new TGetOperationStatusReq(opHandle.toTOperationHandle());
+      req.setGetProgressUpdate(getProgressUpdate);
       TGetOperationStatusResp resp = cliService.GetOperationStatus(req);
       // Checks the status of the RPC call, throws an exception in case of error
       checkStatus(resp.getStatus());
@@ -453,8 +463,8 @@ public class ThriftCLIServiceClient extends CLIServiceClient {
    */
   @Override
   public RowSet fetchResults(OperationHandle opHandle) throws HiveSQLException {
-    // TODO: set the correct default fetch size
-    return fetchResults(opHandle, FetchOrientation.FETCH_NEXT, 10000, FetchType.QUERY_OUTPUT);
+    return fetchResults(
+        opHandle, FetchOrientation.FETCH_NEXT, defaultFetchRows, FetchType.QUERY_OUTPUT);
   }
 
   @Override

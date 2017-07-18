@@ -138,9 +138,24 @@ public class MapRedTask extends ExecDriver implements Serializable {
       runningViaChild = conf.getBoolVar(HiveConf.ConfVars.SUBMITVIACHILD);
 
       if (!runningViaChild) {
+        // since we are running the mapred task in the same jvm, we should update the job conf
+        // in ExecDriver as well to have proper local properties.
+        if (this.isLocalMode()) {
+          // save the original job tracker
+          ctx.setOriginalTracker(ShimLoader.getHadoopShims().getJobLauncherRpcAddress(job));
+          // change it to local
+          ShimLoader.getHadoopShims().setJobLauncherRpcAddress(job, "local");
+        }
         // we are not running this mapred task via child jvm
         // so directly invoke ExecDriver
-        return super.execute(driverContext);
+        int ret = super.execute(driverContext);
+
+        // restore the previous properties for framework name, RM address etc.
+        if (this.isLocalMode()) {
+          // restore the local job tracker back to original
+          ctx.restoreOriginalTracker();
+        }
+        return ret;
       }
 
       // we need to edit the configuration to setup cmdline. clone it first
@@ -327,6 +342,15 @@ public class MapRedTask extends ExecDriver implements Serializable {
         + " environment variable must be set to \"y\" or \"n\" when debugging";
 
     if (environmentVariables.get(HIVE_DEBUG_RECURSIVE).equals("y")) {
+      // HADOOP_CLIENT_OPTS is appended to HADOOP_OPTS in HADOOP.sh, so we should remove the old
+      // HADOOP_CLIENT_OPTS which might have the main debug options from current HADOOP_OPTS. A new
+      // HADOOP_CLIENT_OPTS is created with child JVM debug options, and it will be appended to
+      // HADOOP_OPTS agina when HADOOP.sh is executed for the child process.
+      assert environmentVariables.containsKey(HADOOP_OPTS_KEY)
+        && environmentVariables.get(HADOOP_OPTS_KEY) != null: HADOOP_OPTS_KEY
+        + " environment variable must have been set.";
+      environmentVariables.put(HADOOP_OPTS_KEY, environmentVariables.get(HADOOP_OPTS_KEY)
+        .replace(environmentVariables.get(HADOOP_CLIENT_OPTS), ""));
       // swap debug options in HADOOP_CLIENT_OPTS to those that the child JVM should have
       assert environmentVariables.containsKey(HIVE_CHILD_CLIENT_DEBUG_OPTS)
           && environmentVariables.get(HIVE_CHILD_CLIENT_DEBUG_OPTS) != null : HIVE_CHILD_CLIENT_DEBUG_OPTS
@@ -375,11 +399,7 @@ public class MapRedTask extends ExecDriver implements Serializable {
 
   @Override
   public void updateTaskMetrics(Metrics metrics) {
-    try {
-      metrics.incrementCounter(MetricsConstant.HIVE_MR_TASKS);
-    } catch (IOException ex) {
-      LOG.warn("Could not increment metrics for " + this, ex);
-    }
+    metrics.incrementCounter(MetricsConstant.HIVE_MR_TASKS);
   }
 
   /**

@@ -36,11 +36,15 @@ avg
 base64
 between
 bin
+bloom_filter
 bround
+cardinality_violation
 case
 cbrt
 ceil
 ceiling
+char_length
+character_length
 chr
 coalesce
 collect_list
@@ -68,6 +72,7 @@ date_sub
 datediff
 day
 dayofmonth
+dayofweek
 decode
 default.qtest_get_java_boolean
 degrees
@@ -82,6 +87,7 @@ ewah_bitmap_empty
 ewah_bitmap_or
 exp
 explode
+extract_union
 factorial
 field
 find_in_set
@@ -101,19 +107,26 @@ from_utc_timestamp
 get_json_object
 get_splits
 greatest
+grouping
 hash
 hex
 histogram_numeric
 hour
 if
 in
+in_bloom_filter
 in_file
 index
 initcap
 inline
 instr
+internal_interval
+isfalse
+isnotfalse
 isnotnull
+isnottrue
 isnull
+istrue
 java_method
 json_tuple
 lag
@@ -125,11 +138,14 @@ least
 length
 levenshtein
 like
+likeall
+likeany
 ln
 locate
 log
 log10
 log2
+logged_in_user
 lower
 lpad
 ltrim
@@ -147,6 +163,7 @@ max
 md5
 min
 minute
+mod
 month
 months_between
 named_struct
@@ -161,6 +178,7 @@ not
 ntile
 nullif
 nvl
+octet_length
 or
 parse_url
 parse_url_tuple
@@ -183,8 +201,18 @@ reflect2
 regexp
 regexp_extract
 regexp_replace
+regr_avgx
+regr_avgy
+regr_count
+regr_intercept
+regr_r2
+regr_slope
+regr_sxx
+regr_sxy
+regr_syy
 repeat
 replace
+replicate_rows
 reverse
 rlike
 round
@@ -207,6 +235,7 @@ sort_array_by
 soundex
 space
 split
+sq_count_check
 sqrt
 stack
 std
@@ -238,6 +267,7 @@ variance
 version
 weekofyear
 when
+width_bucket
 windowingtablefunction
 xpath
 xpath_boolean
@@ -255,10 +285,13 @@ PREHOOK: query: SHOW FUNCTIONS '^c.*'
 PREHOOK: type: SHOWFUNCTIONS
 POSTHOOK: query: SHOW FUNCTIONS '^c.*'
 POSTHOOK: type: SHOWFUNCTIONS
+cardinality_violation
 case
 cbrt
 ceil
 ceiling
+char_length
+character_length
 chr
 coalesce
 collect_list
@@ -298,6 +331,10 @@ floor_minute
 from_unixtime
 in_file
 inline
+isfalse
+isnotfalse
+isnottrue
+istrue
 json_tuple
 last_value
 lcase
@@ -311,6 +348,7 @@ percentile
 posexplode
 positive
 regexp_replace
+regr_slope
 replace
 reverse
 rlike
@@ -328,6 +366,7 @@ POSTHOOK: type: SHOWFUNCTIONS
 log
 log10
 log2
+logged_in_user
 PREHOOK: query: SHOW FUNCTIONS '.*date.*'
 PREHOOK: type: SHOWFUNCTIONS
 POSTHOOK: query: SHOW FUNCTIONS '.*date.*'
@@ -371,6 +410,7 @@ max
 md5
 min
 minute
+mod
 month
 months_between
 xpath
@@ -408,6 +448,7 @@ POSTHOOK: type: SHOWFUNCTIONS
 log
 log10
 log2
+logged_in_user
 PREHOOK: query: SHOW FUNCTIONS LIKE "log*"
 PREHOOK: type: SHOWFUNCTIONS
 POSTHOOK: query: SHOW FUNCTIONS LIKE "log*"
@@ -415,6 +456,7 @@ POSTHOOK: type: SHOWFUNCTIONS
 log
 log10
 log2
+logged_in_user
 PREHOOK: query: SHOW FUNCTIONS LIKE `log*`
 PREHOOK: type: SHOWFUNCTIONS
 POSTHOOK: query: SHOW FUNCTIONS LIKE `log*`
@@ -422,3 +464,4 @@ POSTHOOK: type: SHOWFUNCTIONS
 log
 log10
 log2
+logged_in_user

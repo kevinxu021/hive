@@ -18,21 +18,16 @@
 
 package org.apache.hadoop.hive.ql;
 
-import java.io.File;
 import java.util.Arrays;
 import java.util.List;
 
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.common.FileUtils;
-import org.apache.hadoop.hive.conf.HiveConf;
-import org.apache.hadoop.hive.metastore.txn.TxnDbUtil;
-import org.apache.hadoop.hive.ql.io.HiveInputFormat;
-import org.apache.hadoop.hive.ql.session.SessionState;
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
@@ -89,7 +84,6 @@ public class TestTxnCommands2WithSplitUpdate extends TestTxnCommands2 {
     runStatementOnDriver("create table acidTblLegacy (a int, b int) clustered by (a) into " + BUCKET_COUNT + " buckets stored as orc TBLPROPERTIES ('transactional'='true')");
     runStatementOnDriver("alter table acidTblLegacy SET TBLPROPERTIES ('transactional_properties' = 'default')");
   }
-
   /**
    * Test the query correctness and directory layout for ACID table conversion with split-update
    * enabled.
@@ -101,7 +95,8 @@ public class TestTxnCommands2WithSplitUpdate extends TestTxnCommands2 {
    * @throws Exception
    */
   @Test
-  public void testNonAcidToAcidSplitUpdateConversion1() throws Exception {
+  @Override
+  public void testNonAcidToAcidConversion1() throws Exception {
     FileSystem fs = FileSystem.get(hiveConf);
     FileStatus[] status;
 
@@ -231,7 +226,8 @@ public class TestTxnCommands2WithSplitUpdate extends TestTxnCommands2 {
    * @throws Exception
    */
   @Test
-  public void testNonAcidToAcidSplitUpdateConversion2() throws Exception {
+  @Override
+  public void testNonAcidToAcidConversion2() throws Exception {
     FileSystem fs = FileSystem.get(hiveConf);
     FileStatus[] status;
 
@@ -365,7 +361,8 @@ public class TestTxnCommands2WithSplitUpdate extends TestTxnCommands2 {
    * @throws Exception
    */
   @Test
-  public void testNonAcidToAcidSplitUpdateConversion3() throws Exception {
+  @Override
+  public void testNonAcidToAcidConversion3() throws Exception {
     FileSystem fs = FileSystem.get(hiveConf);
     FileStatus[] status;
 
@@ -447,11 +444,11 @@ public class TestTxnCommands2WithSplitUpdate extends TestTxnCommands2 {
         FileStatus[] buckets = fs.listStatus(status[i].getPath(), FileUtils.STAGING_DIR_PATH_FILTER);
         Arrays.sort(buckets);
         if (numDelta == 1) {
-          Assert.assertEquals("delta_0000001_0000001_0000", status[i].getPath().getName());
+          Assert.assertEquals("delta_0000022_0000022_0000", status[i].getPath().getName());
           Assert.assertEquals(BUCKET_COUNT - 1, buckets.length);
           Assert.assertEquals("bucket_00001", buckets[0].getPath().getName());
         } else if (numDelta == 2) {
-          Assert.assertEquals("delta_0000002_0000002_0000", status[i].getPath().getName());
+          Assert.assertEquals("delta_0000023_0000023_0000", status[i].getPath().getName());
           Assert.assertEquals(1, buckets.length);
           Assert.assertEquals("bucket_00001", buckets[0].getPath().getName());
         }
@@ -460,7 +457,7 @@ public class TestTxnCommands2WithSplitUpdate extends TestTxnCommands2 {
         FileStatus[] buckets = fs.listStatus(status[i].getPath(), FileUtils.STAGING_DIR_PATH_FILTER);
         Arrays.sort(buckets);
         if (numDeleteDelta == 1) {
-          Assert.assertEquals("delete_delta_0000001_0000001_0000", status[i].getPath().getName());
+          Assert.assertEquals("delete_delta_0000022_0000022_0000", status[i].getPath().getName());
           Assert.assertEquals(BUCKET_COUNT - 1, buckets.length);
           Assert.assertEquals("bucket_00001", buckets[0].getPath().getName());
         }
@@ -507,7 +504,7 @@ public class TestTxnCommands2WithSplitUpdate extends TestTxnCommands2 {
           Assert.assertEquals("bucket_00001", buckets[0].getPath().getName());
         } else if (numBase == 2) {
           // The new base dir now has two bucket files, since the delta dir has two bucket files
-          Assert.assertEquals("base_0000002", status[i].getPath().getName());
+          Assert.assertEquals("base_0000023", status[i].getPath().getName());
           Assert.assertEquals(1, buckets.length);
           Assert.assertEquals("bucket_00001", buckets[0].getPath().getName());
         }
@@ -533,7 +530,7 @@ public class TestTxnCommands2WithSplitUpdate extends TestTxnCommands2 {
     status = fs.listStatus(new Path(TEST_WAREHOUSE_DIR + "/" +
         (Table.NONACIDORCTBL).toString().toLowerCase()), FileUtils.STAGING_DIR_PATH_FILTER);
     Assert.assertEquals(1, status.length);
-    Assert.assertEquals("base_0000002", status[0].getPath().getName());
+    Assert.assertEquals("base_0000023", status[0].getPath().getName());
     FileStatus[] buckets = fs.listStatus(status[0].getPath(), FileUtils.STAGING_DIR_PATH_FILTER);
     Arrays.sort(buckets);
     Assert.assertEquals(1, buckets.length);

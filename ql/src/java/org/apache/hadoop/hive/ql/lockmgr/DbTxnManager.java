@@ -19,8 +19,13 @@ package org.apache.hadoop.hive.ql.lockmgr;
 
 import com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hive.metastore.SynchronizedMetaStoreClient;
+import org.apache.hadoop.hive.metastore.IMetaStoreClient;
 import org.apache.hadoop.hive.ql.io.AcidUtils;
+import org.apache.hadoop.hive.ql.plan.HiveOperation;
+import org.apache.hadoop.hive.ql.plan.LockDatabaseDesc;
+import org.apache.hadoop.hive.ql.plan.LockTableDesc;
+import org.apache.hadoop.hive.ql.plan.UnlockDatabaseDesc;
+import org.apache.hadoop.hive.ql.plan.UnlockTableDesc;
 import org.apache.hive.common.util.ShutdownHookManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -52,21 +57,30 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * An implementation of HiveTxnManager that stores the transactions in the
- * metastore database.
+ * An implementation of HiveTxnManager that stores the transactions in the metastore database.
+ * There should be 1 instance o {@link DbTxnManager} per {@link org.apache.hadoop.hive.ql.session.SessionState}
+ * with a single thread accessing it at a time, with the exception of {@link #heartbeat()} method.
+ * The later may (usually will) be called from a timer thread.
+ * See {@link #getMS()} for more important concurrency/metastore access notes.
+ * 
+ * Each statement that the TM (transaction manager) should be aware of should belong to a transaction.
+ * Effectively, that means any statement that has side effects.  Exceptions are statements like
+ * Show Compactions, Show Tables, Use Database foo, etc.  The transaction is started either
+ * explicitly ( via Start Transaction SQL statement from end user - not fully supported) or
+ * implicitly by the {@link org.apache.hadoop.hive.ql.Driver} (which looks exactly as autoCommit=true
+ * from end user poit of view). See more at {@link #isExplicitTransaction}.
  */
-public class DbTxnManager extends HiveTxnManagerImpl {
+public final class DbTxnManager extends HiveTxnManagerImpl {
 
   static final private String CLASS_NAME = DbTxnManager.class.getName();
   static final private Logger LOG = LoggerFactory.getLogger(CLASS_NAME);
 
-  private DbLockManager lockMgr = null;
-  private SynchronizedMetaStoreClient client = null;
+  private volatile DbLockManager lockMgr = null;
   /**
    * The Metastore NEXT_TXN_ID.NTXN_NEXT is initialized to 1; it contains the next available
    * transaction id.  Thus is 1 is first transaction id.
    */
-  private long txnId = 0;
+  private volatile long txnId = 0;
   /**
    * assigns a unique monotonically increasing ID to each statement
    * which is part of an open transaction.  This is used by storage
@@ -74,7 +88,47 @@ public class DbTxnManager extends HiveTxnManagerImpl {
    * to keep apart multiple writes of the same data within the same transaction
    * Also see {@link org.apache.hadoop.hive.ql.io.AcidOutputFormat.Options}
    */
-  private int statementId = -1;
+  private int writeId = -1;
+  /**
+   * counts number of statements in the current transaction
+   */
+  private int numStatements = 0;
+  /**
+   * if {@code true} it means current transaction is started via START TRANSACTION which means it cannot
+   * include any Operations which cannot be rolled back (drop partition; write to  non-acid table).
+   * If false, it's a single statement transaction which can include any statement.  This is not a 
+   * contradiction from the user point of view who doesn't know anything about the implicit txn
+   * and cannot call rollback (the statement of course can fail in which case there is nothing to 
+   * rollback (assuming the statement is well implemented)).
+   *
+   * This is done so that all commands run in a transaction which simplifies implementation and
+   * allows a simple implementation of multi-statement txns which don't require a lock manager
+   * capable of deadlock detection.  (todo: not fully implemented; elaborate on how this LM works)
+   *
+   * Also, critically important, ensuring that everything runs in a transaction assigns an order
+   * to all operations in the system - needed for replication/DR.
+   *
+   * We don't want to allow non-transactional statements in a user demarcated txn because the effect
+   * of such statement is "visible" immediately on statement completion, but the user may
+   * issue a rollback but the action of the statement can't be undone (and has possibly already been
+   * seen by another txn).  For example,
+   * start transaction
+   * insert into transactional_table values(1);
+   * insert into non_transactional_table select * from transactional_table;
+   * rollback
+   *
+   * The user would be in for a surprise especially if they are not aware of transactional
+   * properties of the tables involved.
+   *
+   * As a side note: what should the lock manager do with locks for non-transactional resources?
+   * Should it it release them at the end of the stmt or txn?
+   * Some interesting thoughts: http://mysqlmusings.blogspot.com/2009/02/mixing-engines-in-transactions.html
+   */
+  private boolean isExplicitTransaction = false;
+  /**
+   * To ensure transactions don't nest.
+   */
+  private int startTransactionCount = 0;
 
   // QueryId for the query in current transaction
   private String queryId;
@@ -84,33 +138,31 @@ public class DbTxnManager extends HiveTxnManagerImpl {
   private ScheduledFuture<?> heartbeatTask = null;
   private Runnable shutdownRunner = null;
   private static final int SHUTDOWN_HOOK_PRIORITY = 0;
-
-  // SynchronizedMetaStoreClient object per heartbeater thread.
-  private static ThreadLocal<SynchronizedMetaStoreClient> threadLocalMSClient =
-      new ThreadLocal<SynchronizedMetaStoreClient>() {
-
-        @Override
-        protected SynchronizedMetaStoreClient initialValue() {
-          return null;
-        }
-
-        @Override
-        public synchronized void remove() {
-          SynchronizedMetaStoreClient client = this.get();
-          if (client != null) {
-            client.close();
-          }
-          super.remove();
-        }
-      };
-
-  private static AtomicInteger heartbeaterMSClientCount = new AtomicInteger(0);
-  private static int heartbeaterThreadPoolSize = 0;
-
-  private static SynchronizedMetaStoreClient getThreadLocalMSClient() {
-    return threadLocalMSClient.get();
+  /**
+   * We do this on every call to make sure TM uses same MS connection as is used by the caller (Driver,
+   * SemanticAnalyzer, etc).  {@code Hive} instances are cached using ThreadLocal and
+   * {@link IMetaStoreClient} is cached within {@code Hive} with additional logic.  Futhermore, this
+   * ensures that multiple threads are not sharing the same Thrift client (which could happen
+   * if we had cached {@link IMetaStoreClient} here.
+   *
+   * ThreadLocal gets cleaned up automatically when its thread goes away
+   * https://docs.oracle.com/javase/7/docs/api/java/lang/ThreadLocal.html.  This is especially
+   * important for threads created by {@link #heartbeatExecutorService} threads.
+   *
+   * Embedded {@link DbLockManager} follows the same logic.
+   * @return IMetaStoreClient
+   * @throws LockException on any errors
+   */
+  IMetaStoreClient getMS() throws LockException {
+    try {
+      return Hive.get(conf).getMSC();
+    }
+    catch(HiveException|MetaException e) {
+      String msg = "Unable to reach Hive Metastore: " + e.getMessage();
+      LOG.error(msg, e);
+      throw new LockException(e);
+    }
   }
-
   DbTxnManager() {
     shutdownRunner = new Runnable() {
       @Override
@@ -135,28 +187,45 @@ public class DbTxnManager extends HiveTxnManagerImpl {
   }
 
   @Override
-  public long openTxn(String user) throws LockException {
-    //todo: why don't we lock the snapshot here???  Instead of having client make an explicit call
-    //whenever it chooses
+  public long openTxn(Context ctx, String user) throws LockException {
+    return openTxn(ctx, user, 0);
+  }
+
+  @VisibleForTesting
+  long openTxn(Context ctx, String user, long delay) throws LockException {
+    /*Q: why don't we lock the snapshot here???  Instead of having client make an explicit call
+    whenever it chooses
+    A: If we want to rely on locks for transaction scheduling we must get the snapshot after lock
+    acquisition.  Relying on locks is a pessimistic strategy which works better under high
+    contention.*/
     init();
+    getLockManager();
     if(isTxnOpen()) {
       throw new LockException("Transaction already opened. " + JavaUtils.txnIdToString(txnId));
     }
     try {
-      txnId = client.openTxn(user);
-      statementId = 0;
+      txnId = getMS().openTxn(user);
+      writeId = 0;
+      numStatements = 0;
+      isExplicitTransaction = false;
+      startTransactionCount = 0;
       LOG.debug("Opened " + JavaUtils.txnIdToString(txnId));
+      ctx.setHeartbeater(startHeartbeat(delay));
       return txnId;
     } catch (TException e) {
       throw new LockException(e, ErrorMsg.METASTORE_COMMUNICATION_FAILED);
     }
   }
 
+  /**
+   * we don't expect multiple threads to call this method concurrently but {@link #lockMgr} will
+   * be read by a different threads than one writing it, thus it's {@code volatile}
+   */
   @Override
   public HiveLockManager getLockManager() throws LockException {
     init();
     if (lockMgr == null) {
-      lockMgr = new DbLockManager(client, conf);
+      lockMgr = new DbLockManager(conf, this);
     }
     return lockMgr;
   }
@@ -169,24 +238,95 @@ public class DbTxnManager extends HiveTxnManagerImpl {
     catch(LockException e) {
       if(e.getCause() instanceof TxnAbortedException) {
         txnId = 0;
-        statementId = -1;
+        writeId = -1;
       }
       throw e;
     }
   }
 
   /**
-   * This is for testing only.  Normally client should call {@link #acquireLocks(org.apache.hadoop.hive.ql.QueryPlan, org.apache.hadoop.hive.ql.Context, String)}
+   * Watermark to include in error msgs and logs
+   * @param queryPlan
+   * @return
+   */
+  private static String getQueryIdWaterMark(QueryPlan queryPlan) {
+    return "queryId=" + queryPlan.getQueryId();
+  }
+
+  private void markExplicitTransaction(QueryPlan queryPlan) throws LockException {
+    isExplicitTransaction = true;
+    if(++startTransactionCount > 1) {
+      throw new LockException(null, ErrorMsg.OP_NOT_ALLOWED_IN_TXN, queryPlan.getOperationName(),
+        JavaUtils.txnIdToString(getCurrentTxnId()), queryPlan.getQueryId());
+    }
+
+  }
+  /**
+   * Ensures that the current SQL statement is appropriate for the current state of the
+   * Transaction Manager (e.g. can call commit unless you called start transaction)
+   * 
+   * Note that support for multi-statement txns is a work-in-progress so it's only supported in
+   * HiveConf#HIVE_IN_TEST/HiveConf#TEZ_HIVE_IN_TEST.
+   * @param queryPlan
+   * @throws LockException
+   */
+  private void verifyState(QueryPlan queryPlan) throws LockException {
+    if(!isTxnOpen()) {
+      throw new LockException("No transaction context for operation: " + queryPlan.getOperationName() + 
+        " for " + getQueryIdWaterMark(queryPlan));
+    }
+    if(queryPlan.getOperation() == null) {
+      throw new IllegalStateException("Unkown HiverOperation for " + getQueryIdWaterMark(queryPlan));
+    }
+    numStatements++;
+    switch (queryPlan.getOperation()) {
+      case START_TRANSACTION:
+        markExplicitTransaction(queryPlan);
+        break;
+      case COMMIT:
+      case ROLLBACK:
+        if(!isTxnOpen()) {
+          throw new LockException(null, ErrorMsg.OP_NOT_ALLOWED_WITHOUT_TXN, queryPlan.getOperationName());
+        }
+        if(!isExplicitTransaction) {
+          throw new LockException(null, ErrorMsg.OP_NOT_ALLOWED_IN_IMPLICIT_TXN, queryPlan.getOperationName());
+        }
+        break;
+      default:
+        if(!queryPlan.getOperation().isAllowedInTransaction() && isExplicitTransaction) {
+          //for example, drop table in an explicit txn is not allowed
+          //in some cases this requires looking at more than just the operation
+          //for example HiveOperation.LOAD - OK if target is MM table but not OK if non-acid table
+          throw new LockException(null, ErrorMsg.OP_NOT_ALLOWED_IN_TXN, queryPlan.getOperationName(),
+            JavaUtils.txnIdToString(getCurrentTxnId()), queryPlan.getQueryId());
+        }
+    }
+    /*
+    Should we allow writing to non-transactional tables in an explicit transaction?  The user may
+    issue ROLLBACK but these tables won't rollback.
+    Can do this by checking ReadEntity/WriteEntity to determine whether it's reading/writing
+    any non acid and raise an appropriate error
+    * Driver.acidSinks and Driver.acidInQuery can be used if any acid is in the query*/
+  }
+  /**
+   * Normally client should call {@link #acquireLocks(org.apache.hadoop.hive.ql.QueryPlan, org.apache.hadoop.hive.ql.Context, String)}
    * @param isBlocking if false, the method will return immediately; thus the locks may be in LockState.WAITING
    * @return null if no locks were needed
    */
+  @VisibleForTesting
   LockState acquireLocks(QueryPlan plan, Context ctx, String username, boolean isBlocking) throws LockException {
     init();
-        // Make sure we've built the lock manager
+    // Make sure we've built the lock manager
     getLockManager();
-
+    verifyState(plan);
     boolean atLeastOneLock = false;
     queryId = plan.getQueryId();
+    switch (plan.getOperation()) {
+      case SET_AUTOCOMMIT:
+        /**This is here for documentation purposes.  This TM doesn't support this - only has one
+        * mode of operation documented at {@link DbTxnManager#isExplicitTransaction}*/
+        return  null;
+    }
 
     LockRequestBuilder rqstBuilder = new LockRequestBuilder(queryId);
     //link queryId to txnId
@@ -230,8 +370,8 @@ public class DbTxnManager extends HiveTxnManagerImpl {
           // This is a file or something we don't hold locks for.
           continue;
       }
-      if(t != null && AcidUtils.isAcidTable(t)) {
-        compBuilder.setIsAcid(true);
+      if(t != null) {
+        compBuilder.setIsAcid(AcidUtils.isAcidTable(t));
       }
       LockComponent comp = compBuilder.build();
       LOG.debug("Adding lock component to lock request " + comp.toString());
@@ -244,6 +384,7 @@ public class DbTxnManager extends HiveTxnManagerImpl {
     // overwrite) than we need a shared.  If it's update or delete then we
     // need a SEMI-SHARED.
     for (WriteEntity output : plan.getOutputs()) {
+      LOG.debug("output is null " + (output == null));
       if (output.getType() == Entity.Type.DFS_DIR || output.getType() == Entity.Type.LOCAL_DIR ||
           (output.getType() == Entity.Type.TABLE && output.getTable().isTemporary())) {
         // We don't lock files or directories. We also skip locking temp tables.
@@ -251,50 +392,6 @@ public class DbTxnManager extends HiveTxnManagerImpl {
       }
       LockComponentBuilder compBuilder = new LockComponentBuilder();
       Table t = null;
-      LOG.debug("output is null " + (output == null));
-      switch (output.getWriteType()) {
-        case DDL_EXCLUSIVE:
-        case INSERT_OVERWRITE:
-          compBuilder.setExclusive();
-          compBuilder.setOperationType(DataOperationType.NO_TXN);
-          break;
-
-        case INSERT:
-          t = getTable(output);
-          if(AcidUtils.isAcidTable(t)) {
-            compBuilder.setShared();
-            compBuilder.setIsAcid(true);
-          }
-          else {
-            compBuilder.setExclusive();
-            compBuilder.setIsAcid(false);
-          }
-          compBuilder.setOperationType(DataOperationType.INSERT);
-          break;
-        case DDL_SHARED:
-          compBuilder.setShared();
-          compBuilder.setOperationType(DataOperationType.NO_TXN);
-          break;
-
-        case UPDATE:
-          compBuilder.setSemiShared();
-          compBuilder.setOperationType(DataOperationType.UPDATE);
-          t = getTable(output);
-          break;
-        case DELETE:
-          compBuilder.setSemiShared();
-          compBuilder.setOperationType(DataOperationType.DELETE);
-          t = getTable(output);
-          break;
-
-        case DDL_NO_LOCK:
-          continue; // No lock required here
-
-        default:
-          throw new RuntimeException("Unknown write type " +
-              output.getWriteType().toString());
-
-      }
       switch (output.getType()) {
         case DATABASE:
           compBuilder.setDbName(output.getDatabase().getName());
@@ -318,9 +415,64 @@ public class DbTxnManager extends HiveTxnManagerImpl {
           // This is a file or something we don't hold locks for.
           continue;
       }
-      if(t != null && AcidUtils.isAcidTable(t)) {
-        compBuilder.setIsAcid(true);
+      switch (output.getWriteType()) {
+        /* base this on HiveOperation instead?  this and DDL_NO_LOCK is peppered all over the code...
+         Seems much cleaner if each stmt is identified as a particular HiveOperation (which I'd think
+         makes sense everywhere).  This however would be problematic for merge...*/
+        case DDL_EXCLUSIVE:
+          compBuilder.setExclusive();
+          compBuilder.setOperationType(DataOperationType.NO_TXN);
+          break;
+        case INSERT_OVERWRITE:
+          t = getTable(output);
+          if (AcidUtils.isAcidTable(t)) {
+            compBuilder.setSemiShared();
+            compBuilder.setOperationType(DataOperationType.UPDATE);
+          } else {
+            compBuilder.setExclusive();
+            compBuilder.setOperationType(DataOperationType.NO_TXN);
+          }
+          break;
+        case INSERT:
+          assert t != null;
+          if(AcidUtils.isAcidTable(t)) {
+            compBuilder.setShared();
+          }
+          else {
+            if (conf.getBoolVar(HiveConf.ConfVars.HIVE_TXN_STRICT_LOCKING_MODE)) {
+              compBuilder.setExclusive();
+            } else {  // this is backward compatible for non-ACID resources, w/o ACID semantics
+              compBuilder.setShared();
+            }
+          }
+          compBuilder.setOperationType(DataOperationType.INSERT);
+          break;
+        case DDL_SHARED:
+          compBuilder.setShared();
+          compBuilder.setOperationType(DataOperationType.NO_TXN);
+          break;
+
+        case UPDATE:
+          compBuilder.setSemiShared();
+          compBuilder.setOperationType(DataOperationType.UPDATE);
+          break;
+        case DELETE:
+          compBuilder.setSemiShared();
+          compBuilder.setOperationType(DataOperationType.DELETE);
+          break;
+
+        case DDL_NO_LOCK:
+          continue; // No lock required here
+
+        default:
+          throw new RuntimeException("Unknown write type " +
+              output.getWriteType().toString());
       }
+      if(t != null) {
+        compBuilder.setIsAcid(AcidUtils.isAcidTable(t));
+      }
+
+      compBuilder.setIsDynamicPartitionWrite(output.isDynamicPartitionWrite());
       LockComponent comp = compBuilder.build();
       LOG.debug("Adding lock component to lock request " + comp.toString());
       rqstBuilder.addLockComponent(comp);
@@ -335,9 +487,6 @@ public class DbTxnManager extends HiveTxnManagerImpl {
     }
 
     List<HiveLock> locks = new ArrayList<HiveLock>(1);
-    if(isTxnOpen()) {
-      statementId++;
-    }
     LockState lockState = lockMgr.lock(rqstBuilder.build(), queryId, isBlocking, locks);
     ctx.setHiveLocks(locks);
     return lockState;
@@ -355,7 +504,9 @@ public class DbTxnManager extends HiveTxnManagerImpl {
   @VisibleForTesting
   void acquireLocksWithHeartbeatDelay(QueryPlan plan, Context ctx, String username, long delay) throws LockException {
     LockState ls = acquireLocks(plan, ctx, username, true);
-    if (ls != null) { // If there's no lock, we don't need to do heartbeat
+    if (ls != null && !isTxnOpen()) { // If there's no lock, we don't need to do heartbeat
+      // Start heartbeat for read-only queries which don't open transactions but requires locks.
+      // For those that require transactions, the heartbeat has already been started in openTxn.
       ctx.setHeartbeater(startHeartbeat(delay));
     }
   }
@@ -378,7 +529,7 @@ public class DbTxnManager extends HiveTxnManagerImpl {
       lockMgr.clearLocalLockRecords();
       stopHeartbeat();
       LOG.debug("Committing txn " + JavaUtils.txnIdToString(txnId));
-      client.commitTxn(txnId);
+      getMS().commitTxn(txnId);
     } catch (NoSuchTxnException e) {
       LOG.error("Metastore could not find " + JavaUtils.txnIdToString(txnId));
       throw new LockException(e, ErrorMsg.TXN_NO_SUCH_TRANSACTION, JavaUtils.txnIdToString(txnId));
@@ -391,7 +542,8 @@ public class DbTxnManager extends HiveTxnManagerImpl {
           e);
     } finally {
       txnId = 0;
-      statementId = -1;
+      writeId = -1;
+      numStatements = 0;
     }
   }
 
@@ -404,16 +556,19 @@ public class DbTxnManager extends HiveTxnManagerImpl {
       lockMgr.clearLocalLockRecords();
       stopHeartbeat();
       LOG.debug("Rolling back " + JavaUtils.txnIdToString(txnId));
-      client.rollbackTxn(txnId);
+      getMS().rollbackTxn(txnId);
     } catch (NoSuchTxnException e) {
       LOG.error("Metastore could not find " + JavaUtils.txnIdToString(txnId));
       throw new LockException(e, ErrorMsg.TXN_NO_SUCH_TRANSACTION, JavaUtils.txnIdToString(txnId));
+    } catch(TxnAbortedException e) {
+      throw new LockException(e, ErrorMsg.TXN_ABORTED, JavaUtils.txnIdToString(txnId));
     } catch (TException e) {
       throw new LockException(ErrorMsg.METASTORE_COMMUNICATION_FAILED.getMsg(),
           e);
     } finally {
       txnId = 0;
-      statementId = -1;
+      writeId = -1;
+      numStatements = 0;
     }
   }
 
@@ -448,29 +603,11 @@ public class DbTxnManager extends HiveTxnManagerImpl {
     for (HiveLock lock : locks) {
       long lockId = ((DbLockManager.DbHiveLock)lock).lockId;
       try {
-        // Get the threadlocal metastore client for the heartbeat calls.
-        SynchronizedMetaStoreClient heartbeaterClient = getThreadLocalMSClient();
-        if (heartbeaterClient == null) {
-          Hive db;
-          try {
-            db = Hive.get(conf);
-            // Create a new threadlocal synchronized metastore client for use in hearbeater threads.
-            // This makes the concurrent use of heartbeat thread safe, and won't cause transaction
-            // abort due to a long metastore client call blocking the heartbeat call.
-            heartbeaterClient = new SynchronizedMetaStoreClient(db.getMSC());
-            threadLocalMSClient.set(heartbeaterClient);
-          } catch (HiveException e) {
-            LOG.error("Unable to create new metastore client for heartbeating", e);
-            throw new LockException(e);
-          }
-          // Increment the threadlocal metastore client count
-          if (heartbeaterMSClientCount.incrementAndGet() >= heartbeaterThreadPoolSize) {
-            LOG.warn("The number of hearbeater metastore clients - + "
-                + heartbeaterMSClientCount.get() + ", has exceeded the max limit - "
-                + heartbeaterThreadPoolSize);
-          }
-        }
-        heartbeaterClient.heartbeat(txnId, lockId);
+        /**
+         * This relies on the ThreadLocal caching, which implies that the same {@link IMetaStoreClient},
+         * in particular the Thrift connection it uses is never shared between threads
+         */
+        getMS().heartbeat(txnId, lockId);
       } catch (NoSuchLockException e) {
         LOG.error("Unable to find lock " + JavaUtils.lockIdToString(lockId));
         throw new LockException(e, ErrorMsg.LOCK_NO_SUCH_LOCK, JavaUtils.lockIdToString(lockId));
@@ -542,7 +679,7 @@ public class DbTxnManager extends HiveTxnManagerImpl {
   public ValidTxnList getValidTxns() throws LockException {
     init();
     try {
-      return client.getValidTxns(txnId);
+      return getMS().getValidTxns(txnId);
     } catch (TException e) {
       throw new LockException(ErrorMsg.METASTORE_COMMUNICATION_FAILED.getMsg(),
           e);
@@ -558,6 +695,26 @@ public class DbTxnManager extends HiveTxnManagerImpl {
   public boolean supportsExplicitLock() {
     return false;
   }
+  @Override
+  public int lockTable(Hive db, LockTableDesc lockTbl) throws HiveException {
+    super.lockTable(db, lockTbl);
+    throw new UnsupportedOperationException();
+  }
+  @Override
+  public int unlockTable(Hive hiveDB, UnlockTableDesc unlockTbl) throws HiveException {
+    super.unlockTable(hiveDB, unlockTbl);
+    throw new UnsupportedOperationException();
+  }
+  @Override
+  public int lockDatabase(Hive hiveDB, LockDatabaseDesc lockDb) throws HiveException {
+    super.lockDatabase(hiveDB, lockDb);
+    throw new UnsupportedOperationException();
+  }
+  @Override
+  public int unlockDatabase(Hive hiveDB, UnlockDatabaseDesc unlockDb) throws HiveException {
+    super.unlockDatabase(hiveDB, unlockDb);
+    throw new UnsupportedOperationException();
+  }
 
   @Override
   public boolean useNewShowLocksFormat() {
@@ -568,7 +725,44 @@ public class DbTxnManager extends HiveTxnManagerImpl {
   public boolean supportsAcid() {
     return true;
   }
-
+  /**
+   * In an explicit txn start_transaction is the 1st statement and we record the snapshot at the
+   * start of the txn for Snapshot Isolation.  For Read Committed (not supported yet) we'd record
+   * it before executing each statement (but after lock acquisition if using lock based concurrency
+   * control).
+   * For implicit txn, the stmt that triggered/started the txn is the first statement
+   */
+  @Override
+  public boolean recordSnapshot(QueryPlan queryPlan) {
+    assert isTxnOpen();
+    assert numStatements > 0 : "was acquireLocks() called already?";
+    if(queryPlan.getOperation() == HiveOperation.START_TRANSACTION) {
+      //here if start of explicit txn
+      assert isExplicitTransaction;
+      assert numStatements == 1;
+      return true;
+    }
+    else if(!isExplicitTransaction) {
+      assert numStatements == 1 : "numStatements=" + numStatements + " in implicit txn";
+      if (queryPlan.hasAcidResourcesInQuery()) {
+        //1st and only stmt in implicit txn and uses acid resource
+        return true;
+      }
+    }
+    return false;
+  }
+  @Override
+  public boolean isImplicitTransactionOpen() {
+    if(!isTxnOpen()) {
+      //some commands like "show databases" don't start implicit transactions
+      return false;
+    }
+    if(!isExplicitTransaction) {
+      assert numStatements == 1 : "numStatements=" + numStatements;
+      return true;
+    }
+    return false;
+  }
   @Override
   protected void destruct() {
     try {
@@ -586,21 +780,10 @@ public class DbTxnManager extends HiveTxnManagerImpl {
   }
 
   private void init() throws LockException {
-    if (client == null) {
-      if (conf == null) {
-        throw new RuntimeException("Must call setHiveConf before any other " +
-            "methods.");
-      }
-      try {
-        Hive db = Hive.get(conf);
-        client = new SynchronizedMetaStoreClient(db.getMSC());
-        initHeartbeatExecutorService();
-      } catch (MetaException e) {
-        throw new LockException(ErrorMsg.METASTORE_COULD_NOT_INITIATE.getMsg(), e);
-      } catch (HiveException e) {
-        throw new LockException(ErrorMsg.METASTORE_COULD_NOT_INITIATE.getMsg(), e);
-      }
+    if (conf == null) {
+      throw new RuntimeException("Must call setHiveConf before any other methods.");
     }
+    initHeartbeatExecutorService();
   }
 
   private synchronized void initHeartbeatExecutorService() {
@@ -608,10 +791,9 @@ public class DbTxnManager extends HiveTxnManagerImpl {
         && !heartbeatExecutorService.isTerminated()) {
       return;
     }
-    heartbeaterThreadPoolSize =
-        conf.getIntVar(HiveConf.ConfVars.HIVE_TXN_HEARTBEAT_THREADPOOL_SIZE);
     heartbeatExecutorService =
-        Executors.newScheduledThreadPool(heartbeaterThreadPoolSize, new ThreadFactory() {
+        Executors.newScheduledThreadPool(
+          conf.getIntVar(HiveConf.ConfVars.HIVE_TXN_HEARTBEAT_THREADPOOL_SIZE), new ThreadFactory() {
           private final AtomicInteger threadCounter = new AtomicInteger();
 
           @Override
@@ -623,21 +805,9 @@ public class DbTxnManager extends HiveTxnManagerImpl {
   }
 
   public static class HeartbeaterThread extends Thread {
-    public HeartbeaterThread(Runnable target, String name) {
+    HeartbeaterThread(Runnable target, String name) {
       super(target, name);
       setDaemon(true);
-    }
-
-    @Override
-    /**
-     * We're overriding finalize so that we can do an orderly cleanup of resources held by
-     * the threadlocal metastore client.
-     */
-    protected void finalize() throws Throwable {
-      threadLocalMSClient.remove();
-      // Adjust the metastore client count
-      DbTxnManager.heartbeaterMSClientCount.decrementAndGet();
-      super.finalize();
     }
   }
 
@@ -650,8 +820,9 @@ public class DbTxnManager extends HiveTxnManagerImpl {
     return txnId;
   }
   @Override
-  public int getStatementId() {
-    return statementId;
+  public int getWriteIdAndIncrement() {
+    assert isTxnOpen();
+    return writeId++;
   }
 
   private static long getHeartbeatInterval(Configuration conf) throws LockException {

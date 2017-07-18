@@ -19,10 +19,13 @@
 package org.apache.hive.service.server;
 
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.StringWriter;
 import java.net.HttpURLConnection;
 import java.net.URL;
 
+import org.apache.commons.io.IOUtils;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
 import org.apache.hadoop.hive.metastore.MetaStoreUtils;
@@ -86,6 +89,21 @@ public class TestHS2HttpServer {
   }
 
   @Test
+  public void testContextRootUrlRewrite() throws Exception {
+    String datePattern = "[a-zA-Z]{3} [a-zA-Z]{3} [0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}";
+    String dateMask = "xxxMasked_DateTime_xxx";
+    String baseURL = "http://localhost:" + webUIPort + "/";
+    String contextRootContent = getURLResponseAsString(baseURL);
+
+    String jspUrl = "http://localhost:" + webUIPort + "/hiveserver2.jsp";
+    String jspContent = getURLResponseAsString(jspUrl);
+
+    String expected = contextRootContent.replaceAll(datePattern, dateMask);
+    String actual = jspContent.replaceAll(datePattern, dateMask);
+    Assert.assertEquals(expected, actual);
+  }
+
+  @Test
   public void testConfStrippedFromWebUI() throws Exception {
 
     String pwdValFound = null;
@@ -120,6 +138,15 @@ public class TestHS2HttpServer {
 
     assertNotNull(pwdKeyFound);
     assertNull(pwdValFound);
+  }
+
+  private String getURLResponseAsString(String baseURL) throws IOException {
+    URL url = new URL(baseURL);
+    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+    Assert.assertEquals("Got an HTTP response code other thank OK.", HttpURLConnection.HTTP_OK, conn.getResponseCode());
+    StringWriter writer = new StringWriter();
+    IOUtils.copy(conn.getInputStream(), writer, "UTF-8");
+    return writer.toString();
   }
 
 

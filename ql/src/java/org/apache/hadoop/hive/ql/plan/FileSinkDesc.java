@@ -25,7 +25,7 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.ql.io.AcidUtils;
 import org.apache.hadoop.hive.ql.metadata.Table;
 import org.apache.hadoop.hive.ql.plan.Explain.Level;
-
+import org.apache.hadoop.hive.ql.plan.Explain.Vectorization;
 
 /**
  * FileSinkDesc.
@@ -97,6 +97,14 @@ public class FileSinkDesc extends AbstractOperatorDesc {
   private Path destPath;
   private boolean isHiveServerQuery;
 
+  /**
+   * Whether is a HiveServer query, and the destination table is
+   * indeed written using ThriftJDBCBinarySerDe
+   */
+  private boolean isUsingThriftJDBCBinarySerDe = false;
+
+  private boolean isInsertOverwrite = false;
+
   public FileSinkDesc() {
   }
 
@@ -164,6 +172,14 @@ public class FileSinkDesc extends AbstractOperatorDesc {
 
   public void setHiveServerQuery(boolean isHiveServerQuery) {
 	  this.isHiveServerQuery = isHiveServerQuery;
+  }
+
+  public boolean isUsingThriftJDBCBinarySerDe() {
+	  return this.isUsingThriftJDBCBinarySerDe;
+  }
+
+  public void setIsUsingThriftJDBCBinarySerDe(boolean isUsingThriftJDBCBinarySerDe) {
+	  this.isUsingThriftJDBCBinarySerDe = isUsingThriftJDBCBinarySerDe;
   }
 
   @Explain(displayName = "directory", explainLevels = { Level.EXTENDED })
@@ -424,7 +440,10 @@ public class FileSinkDesc extends AbstractOperatorDesc {
   public DPSortState getDpSortState() {
     return dpSortState;
   }
-
+  @Explain(displayName = "Dp Sort State")
+  public String getDpSortStateString() {
+    return getDpSortState() == DPSortState.NONE ? null : getDpSortState().toString();
+  }
   public void setDpSortState(DPSortState dpSortState) {
     this.dpSortState = dpSortState;
   }
@@ -436,7 +455,10 @@ public class FileSinkDesc extends AbstractOperatorDesc {
   public AcidUtils.Operation getWriteType() {
     return writeType;
   }
-
+  @Explain(displayName = "Write Type")
+  public String getWriteTypeString() {
+    return getWriteType() == AcidUtils.Operation.NOT_ACID ? null : getWriteType().toString();
+  }
   public void setTransactionId(long id) {
     txnId = id;
   }
@@ -474,4 +496,27 @@ public class FileSinkDesc extends AbstractOperatorDesc {
     this.statsTmpDir = statsCollectionTempDir;
   }
 
+  public class FileSinkOperatorExplainVectorization extends OperatorExplainVectorization {
+
+    public FileSinkOperatorExplainVectorization(VectorDesc vectorDesc) {
+      // Native vectorization not supported.
+      super(vectorDesc, false);
+    }
+  }
+
+  @Explain(vectorization = Vectorization.OPERATOR, displayName = "File Sink Vectorization", explainLevels = { Level.DEFAULT, Level.EXTENDED })
+  public FileSinkOperatorExplainVectorization getFileSinkVectorization() {
+    if (vectorDesc == null) {
+      return null;
+    }
+    return new FileSinkOperatorExplainVectorization(vectorDesc);
+  }
+
+  public void setInsertOverwrite(boolean isInsertOverwrite) {
+    this.isInsertOverwrite = isInsertOverwrite;
+  }
+
+  public boolean getInsertOverwrite() {
+    return isInsertOverwrite;
+  }
 }

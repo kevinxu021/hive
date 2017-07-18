@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -30,12 +31,10 @@ import java.util.Map.Entry;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
-
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -55,6 +54,7 @@ import org.apache.hadoop.hive.ql.exec.Utilities;
 import org.apache.hadoop.hive.ql.metadata.Hive;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.metadata.Partition;
+import org.apache.hadoop.hive.ql.metadata.PartitionIterable;
 import org.apache.hadoop.hive.ql.metadata.Table;
 import org.apache.hadoop.hive.ql.parse.PrunedPartitionList;
 import org.apache.hadoop.hive.ql.parse.SemanticException;
@@ -75,6 +75,7 @@ import org.apache.hadoop.hive.ql.util.JavaDataModel;
 import org.apache.hadoop.hive.serde.serdeConstants;
 import org.apache.hadoop.hive.serde2.objectinspector.ConstantObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
+import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector.Category;
 import org.apache.hadoop.hive.serde2.objectinspector.StandardConstantListObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.StandardConstantMapObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.StandardConstantStructObjectInspector;
@@ -99,7 +100,11 @@ import org.apache.hadoop.hive.serde2.objectinspector.primitive.WritableLongObjec
 import org.apache.hadoop.hive.serde2.objectinspector.primitive.WritableShortObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.primitive.WritableStringObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.primitive.WritableTimestampObjectInspector;
+import org.apache.hadoop.hive.serde2.objectinspector.primitive.WritableTimestampTZObjectInspector;
 import org.apache.hadoop.hive.serde2.typeinfo.CharTypeInfo;
+import org.apache.hadoop.hive.serde2.typeinfo.PrimitiveTypeInfo;
+import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
+import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
 import org.apache.hadoop.hive.serde2.typeinfo.VarcharTypeInfo;
 import org.apache.hadoop.io.BytesWritable;
 import org.apache.hive.common.util.AnnotationUtils;
@@ -110,6 +115,7 @@ import org.slf4j.LoggerFactory;
 import com.google.common.base.Joiner;
 import com.google.common.collect.Lists;
 import com.google.common.math.LongMath;
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
 
 public class StatsUtils {
 
@@ -391,7 +397,7 @@ public class StatsUtils {
     return scaledSelectivity;
   }
 
-  private static long getRangeDelta(ColStatistics.Range range) {
+  public static long getRangeDelta(ColStatistics.Range range) {
     if (range.minValue != null && range.maxValue != null) {
       return (range.maxValue.longValue() - range.minValue.longValue());
     }
@@ -424,34 +430,37 @@ public class StatsUtils {
           // conditions for being partition column
           if (col.equals(ci.getInternalName()) && ci.getIsVirtualCol() &&
               !ci.isHiddenVirtualCol()) {
-            // currently metastore does not store column stats for
-            // partition column, so we calculate the NDV from pruned
-            // partition list
-            ColStatistics partCS = new ColStatistics(ci.getInternalName(), ci.getType()
-                .getTypeName());
-            long numPartitions = getNDVPartitionColumn(partList.getPartitions(),
-                ci.getInternalName());
-            partCS.setCountDistint(numPartitions);
-            partCS.setAvgColLen(StatsUtils.getAvgColLenOf(conf,
-                ci.getObjectInspector(), partCS.getColumnType()));
-            partCS.setRange(getRangePartitionColumn(partList.getPartitions(), ci.getInternalName(),
-                ci.getType().getTypeName(), conf.getVar(ConfVars.DEFAULTPARTITIONNAME)));
-            colStats.add(partCS);
+            colStats.add(getColStatsForPartCol(ci, new PartitionIterable(partList.getPartitions()), conf));
           }
         }
       }
     }
   }
 
-  public static int getNDVPartitionColumn(Set<Partition> partitions, String partColName) {
-    Set<String> distinctVals = new HashSet<String>(partitions.size());
+  public static ColStatistics getColStatsForPartCol(ColumnInfo ci,PartitionIterable partList, HiveConf conf) {
+    // currently metastore does not store column stats for
+    // partition column, so we calculate the NDV from partition list
+    ColStatistics partCS = new ColStatistics(ci.getInternalName(), ci.getType()
+        .getTypeName());
+    long numPartitions = getNDVPartitionColumn(partList,
+        ci.getInternalName());
+    partCS.setCountDistint(numPartitions);
+    partCS.setAvgColLen(StatsUtils.getAvgColLenOf(conf,
+        ci.getObjectInspector(), partCS.getColumnType()));
+    partCS.setRange(getRangePartitionColumn(partList, ci.getInternalName(),
+        ci.getType().getTypeName(), conf.getVar(ConfVars.DEFAULTPARTITIONNAME)));
+    return partCS;
+  }
+
+  public static int getNDVPartitionColumn(PartitionIterable partitions, String partColName) {
+    Set<String> distinctVals = new HashSet<String>();
     for (Partition partition : partitions) {
       distinctVals.add(partition.getSpec().get(partColName));
     }
     return distinctVals.size();
   }
 
-  private static Range getRangePartitionColumn(Set<Partition> partitions, String partColName,
+  private static Range getRangePartitionColumn(PartitionIterable partitions, String partColName,
       String colType, String defaultPartName) {
     Range range = null;
     String partVal;
@@ -735,7 +744,8 @@ public class StatsUtils {
     } else if (colTypeLowerCase.equals(serdeConstants.BINARY_TYPE_NAME)) {
       cs.setAvgColLen(csd.getBinaryStats().getAvgColLen());
       cs.setNumNulls(csd.getBinaryStats().getNumNulls());
-    } else if (colTypeLowerCase.equals(serdeConstants.TIMESTAMP_TYPE_NAME)) {
+    } else if (colTypeLowerCase.equals(serdeConstants.TIMESTAMP_TYPE_NAME) ||
+        colTypeLowerCase.equals(serdeConstants.TIMESTAMPTZ_TYPE_NAME)) {
       cs.setAvgColLen(JavaDataModel.get().lengthOfTimestamp());
     } else if (colTypeLowerCase.startsWith(serdeConstants.DECIMAL_TYPE_NAME)) {
       cs.setAvgColLen(JavaDataModel.get().lengthOfDecimal());
@@ -756,8 +766,12 @@ public class StatsUtils {
       }
     } else if (colTypeLowerCase.equals(serdeConstants.DATE_TYPE_NAME)) {
       cs.setAvgColLen(JavaDataModel.get().lengthOfDate());
-      cs.setRange(csd.getDateStats().getLowValue().getDaysSinceEpoch(),
-              csd.getDateStats().getHighValue().getDaysSinceEpoch());
+      cs.setNumNulls(csd.getDateStats().getNumNulls());
+      Long lowVal = (csd.getDateStats().getLowValue() != null) ? csd.getDateStats().getLowValue()
+          .getDaysSinceEpoch() : null;
+      Long highVal = (csd.getDateStats().getHighValue() != null) ? csd.getDateStats().getHighValue()
+          .getDaysSinceEpoch() : null;
+      cs.setRange(lowVal, highVal);
     } else {
       // Columns statistics for complex datatypes are not supported yet
       return null;
@@ -1030,7 +1044,8 @@ public class StatsUtils {
         || colTypeLowerCase.equals(serdeConstants.INTERVAL_YEAR_MONTH_TYPE_NAME)
         || colTypeLowerCase.equals("long")) {
       return JavaDataModel.get().primitive2();
-    } else if (colTypeLowerCase.equals(serdeConstants.TIMESTAMP_TYPE_NAME)) {
+    } else if (colTypeLowerCase.equals(serdeConstants.TIMESTAMP_TYPE_NAME) ||
+        colTypeLowerCase.equals(serdeConstants.TIMESTAMPTZ_TYPE_NAME)) {
       return JavaDataModel.get().lengthOfTimestamp();
     } else if (colTypeLowerCase.equals(serdeConstants.DATE_TYPE_NAME)) {
       return JavaDataModel.get().lengthOfDate();
@@ -1067,7 +1082,8 @@ public class StatsUtils {
       return JavaDataModel.get().lengthForByteArrayOfSize(length);
     } else if (colTypeLowerCase.equals(serdeConstants.BOOLEAN_TYPE_NAME)) {
       return JavaDataModel.get().lengthForBooleanArrayOfSize(length);
-    } else if (colTypeLowerCase.equals(serdeConstants.TIMESTAMP_TYPE_NAME)) {
+    } else if (colTypeLowerCase.equals(serdeConstants.TIMESTAMP_TYPE_NAME) ||
+        colTypeLowerCase.equals(serdeConstants.TIMESTAMPTZ_TYPE_NAME)) {
       return JavaDataModel.get().lengthForTimestampArrayOfSize(length);
     } else if (colTypeLowerCase.equals(serdeConstants.DATE_TYPE_NAME)) {
       return JavaDataModel.get().lengthForDateArrayOfSize(length);
@@ -1152,7 +1168,8 @@ public class StatsUtils {
       return JavaDataModel.get().primitive2();
     } else if (oi instanceof WritableShortObjectInspector) {
       return JavaDataModel.get().primitive1();
-    } else if (oi instanceof WritableTimestampObjectInspector) {
+    } else if (oi instanceof WritableTimestampObjectInspector ||
+        oi instanceof WritableTimestampTZObjectInspector) {
       return JavaDataModel.get().lengthOfTimestamp();
     }
 
@@ -1274,7 +1291,11 @@ public class StatsUtils {
         ColStatistics colStats = parentStats.getColumnStatisticsFromColName(colName);
         if (colStats != null) {
           /* If statistics for the column already exist use it. */
-          return colStats;
+          try {
+            return colStats.clone();
+          } catch (CloneNotSupportedException e) {
+            return null;
+          }
         }
 
         // virtual columns
@@ -1307,11 +1328,31 @@ public class StatsUtils {
         countDistincts = 1;
       }
     } else if (end instanceof ExprNodeGenericFuncDesc) {
-
-      // udf projection
       ExprNodeGenericFuncDesc engfd = (ExprNodeGenericFuncDesc) end;
       colName = engfd.getName();
       colType = engfd.getTypeString();
+
+      // If it is a widening cast, we do not change NDV, min, max
+      if (isWideningCast(engfd) && engfd.getChildren().get(0) instanceof ExprNodeColumnDesc) {
+        // cast on single column
+        ColStatistics stats = parentStats.getColumnStatisticsFromColName(engfd.getCols().get(0));
+        if (stats != null) {
+          ColStatistics newStats;
+          try {
+            newStats = stats.clone();
+          } catch (CloneNotSupportedException e) {
+            LOG.warn("error cloning stats, this should not happen");
+            return null;
+          }
+          newStats.setColumnName(colName);
+          colType = colType.toLowerCase();
+          newStats.setColumnType(colType);
+          newStats.setAvgColLen(getAvgColLenOf(conf, oi, colType));
+          return newStats;
+        }
+      }
+
+      // fallback to default
       countDistincts = getNDVFor(engfd, numRows, parentStats);
     } else if (end instanceof ExprNodeColumnListDesc) {
 
@@ -1341,6 +1382,15 @@ public class StatsUtils {
     return colStats;
   }
 
+  private static boolean isWideningCast(ExprNodeGenericFuncDesc engfd) {
+    GenericUDF udf = engfd.getGenericUDF();
+    if (!FunctionRegistry.isOpCast(udf)) {
+      // It is not a cast
+      return false;
+    }
+    return TypeInfoUtils.implicitConvertible(engfd.getChildren().get(0).getTypeInfo(),
+            engfd.getTypeInfo());
+  }
 
   public static Long addWithExpDecay (List<Long> distinctVals) {
     // Exponential back-off for NDVs.
@@ -1498,7 +1548,8 @@ public class StatsUtils {
         } else if (colTypeLowerCase.equals(serdeConstants.BINARY_TYPE_NAME)) {
           int acl = (int) Math.round(cs.getAvgColLen());
           sizeOf = JavaDataModel.get().lengthForByteArrayOfSize(acl);
-        } else if (colTypeLowerCase.equals(serdeConstants.TIMESTAMP_TYPE_NAME)) {
+        } else if (colTypeLowerCase.equals(serdeConstants.TIMESTAMP_TYPE_NAME) ||
+            colTypeLowerCase.equals(serdeConstants.TIMESTAMPTZ_TYPE_NAME)) {
           sizeOf = JavaDataModel.get().lengthOfTimestamp();
         } else if (colTypeLowerCase.startsWith(serdeConstants.DECIMAL_TYPE_NAME)) {
           sizeOf = JavaDataModel.get().lengthOfDecimal();
@@ -1589,57 +1640,45 @@ public class StatsUtils {
     }
   }
 
-  public static int getNumBitVectorsForNDVEstimation(HiveConf conf) throws SemanticException {
-    int numBitVectors;
-    float percentageError = HiveConf.getFloatVar(conf, HiveConf.ConfVars.HIVE_STATS_NDV_ERROR);
-
-    if (percentageError < 0.0) {
-      throw new SemanticException("hive.stats.ndv.error can't be negative");
-    } else if (percentageError <= 2.4) {
-      numBitVectors = 1024;
-      LOG.info("Lowest error achievable is 2.4% but error requested is " + percentageError + "%");
-      LOG.info("Choosing 1024 bit vectors..");
-    } else if (percentageError <= 3.4 ) {
-      numBitVectors = 1024;
-      LOG.info("Error requested is " + percentageError + "%");
-      LOG.info("Choosing 1024 bit vectors..");
-    } else if (percentageError <= 4.8) {
-      numBitVectors = 512;
-      LOG.info("Error requested is " + percentageError + "%");
-      LOG.info("Choosing 512 bit vectors..");
-     } else if (percentageError <= 6.8) {
-      numBitVectors = 256;
-      LOG.info("Error requested is " + percentageError + "%");
-      LOG.info("Choosing 256 bit vectors..");
-    } else if (percentageError <= 9.7) {
-      numBitVectors = 128;
-      LOG.info("Error requested is " + percentageError + "%");
-      LOG.info("Choosing 128 bit vectors..");
-    } else if (percentageError <= 13.8) {
-      numBitVectors = 64;
-      LOG.info("Error requested is " + percentageError + "%");
-      LOG.info("Choosing 64 bit vectors..");
-    } else if (percentageError <= 19.6) {
-      numBitVectors = 32;
-      LOG.info("Error requested is " + percentageError + "%");
-      LOG.info("Choosing 32 bit vectors..");
-    } else if (percentageError <= 28.2) {
-      numBitVectors = 16;
-      LOG.info("Error requested is " + percentageError + "%");
-      LOG.info("Choosing 16 bit vectors..");
-    } else if (percentageError <= 40.9) {
-      numBitVectors = 8;
-      LOG.info("Error requested is " + percentageError + "%");
-      LOG.info("Choosing 8 bit vectors..");
-    } else if (percentageError <= 61.0) {
-      numBitVectors = 4;
-      LOG.info("Error requested is " + percentageError + "%");
-      LOG.info("Choosing 4 bit vectors..");
-    } else {
-      numBitVectors = 2;
-      LOG.info("Error requested is " + percentageError + "%");
-      LOG.info("Choosing 2 bit vectors..");
+  public static boolean hasDiscreteRange(ColStatistics colStat) {
+    if (colStat.getRange() != null) {
+      TypeInfo colType = TypeInfoUtils.getTypeInfoFromTypeString(colStat.getColumnType());
+      if (colType.getCategory() == Category.PRIMITIVE) {
+        PrimitiveTypeInfo pti = (PrimitiveTypeInfo) colType;
+        switch (pti.getPrimitiveCategory()) {
+          case BOOLEAN:
+          case BYTE:
+          case SHORT:
+          case INT:
+          case LONG:
+            return true;
+          default:
+            break;
+        }
+      }
     }
-    return numBitVectors;
+    return false;
+  }
+
+  public static Range combineRange(Range range1, Range range2) {
+    if (   range1.minValue != null && range1.maxValue != null
+        && range2.minValue != null && range2.maxValue != null) {
+      long min1 = range1.minValue.longValue();
+      long max1 = range1.maxValue.longValue();
+      long min2 = range2.minValue.longValue();
+      long max2 = range2.maxValue.longValue();
+
+      if (   (min1 < min2 && max1 < max2)
+          || (min1 > min2 && max1 > max2)) {
+        // No overlap between the two ranges
+        return null;
+      } else {
+        // There is an overlap of ranges - create combined range.
+        return new ColStatistics.Range(
+            Math.min(min1, min2),
+            Math.max(max1,  max2));
+      }
+    }
+    return null;
   }
 }

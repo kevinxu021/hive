@@ -29,10 +29,15 @@ import org.apache.hadoop.hive.ql.stats.StatsCollectionContext;
 public class AbstractOperatorDesc implements OperatorDesc {
 
   protected boolean vectorMode = false;
+
+  // Extra parameters only for vectorization.
+  protected VectorDesc vectorDesc;
+
   protected Statistics statistics;
   protected transient OpTraits opTraits;
   protected transient Map<String, String> opProps;
   protected long memNeeded = 0;
+  protected long memAvailable = 0;
   protected String runtimeStatsTmpDir;
 
   @Override
@@ -64,6 +69,14 @@ public class AbstractOperatorDesc implements OperatorDesc {
     this.vectorMode = vm;
   }
 
+  public void setVectorDesc(VectorDesc vectorDesc) {
+    this.vectorDesc = vectorDesc;
+  }
+
+  public VectorDesc getVectorDesc() {
+    return vectorDesc;
+  }
+
   @Override
   public OpTraits getTraits() {
     return opTraits;
@@ -91,6 +104,16 @@ public class AbstractOperatorDesc implements OperatorDesc {
   @Override
   public void setMemoryNeeded(long memNeeded) {
     this.memNeeded = memNeeded;
+  }
+
+  @Override
+  public long getMaxMemoryAvailable() {
+    return memAvailable;
+  }
+
+  @Override
+  public void setMaxMemoryAvailable(final long memoryAvailble) {
+    this.memAvailable = memoryAvailble;
   }
 
   public String getRuntimeStatsTmpDir() {

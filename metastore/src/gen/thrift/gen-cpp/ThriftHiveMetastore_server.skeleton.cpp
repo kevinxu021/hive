@@ -112,7 +112,7 @@ class ThriftHiveMetastoreHandler : virtual public ThriftHiveMetastoreIf {
     printf("create_table_with_environment_context\n");
   }
 
-  void create_table_with_constraints(const Table& tbl, const std::vector<SQLPrimaryKey> & primaryKeys, const std::vector<SQLForeignKey> & foreignKeys) {
+  void create_table_with_constraints(const Table& tbl, const std::vector<SQLPrimaryKey> & primaryKeys, const std::vector<SQLForeignKey> & foreignKeys, const std::vector<SQLUniqueConstraint> & uniqueConstraints, const std::vector<SQLNotNullConstraint> & notNullConstraints) {
     // Your implementation goes here
     printf("create_table_with_constraints\n");
   }
@@ -132,6 +132,16 @@ class ThriftHiveMetastoreHandler : virtual public ThriftHiveMetastoreIf {
     printf("add_foreign_key\n");
   }
 
+  void add_unique_constraint(const AddUniqueConstraintRequest& req) {
+    // Your implementation goes here
+    printf("add_unique_constraint\n");
+  }
+
+  void add_not_null_constraint(const AddNotNullConstraintRequest& req) {
+    // Your implementation goes here
+    printf("add_not_null_constraint\n");
+  }
+
   void drop_table(const std::string& dbname, const std::string& name, const bool deleteData) {
     // Your implementation goes here
     printf("drop_table\n");
@@ -142,9 +152,19 @@ class ThriftHiveMetastoreHandler : virtual public ThriftHiveMetastoreIf {
     printf("drop_table_with_environment_context\n");
   }
 
+  void truncate_table(const std::string& dbName, const std::string& tableName, const std::vector<std::string> & partNames) {
+    // Your implementation goes here
+    printf("truncate_table\n");
+  }
+
   void get_tables(std::vector<std::string> & _return, const std::string& db_name, const std::string& pattern) {
     // Your implementation goes here
     printf("get_tables\n");
+  }
+
+  void get_tables_by_type(std::vector<std::string> & _return, const std::string& db_name, const std::string& pattern, const std::string& tableType) {
+    // Your implementation goes here
+    printf("get_tables_by_type\n");
   }
 
   void get_table_meta(std::vector<TableMeta> & _return, const std::string& db_patterns, const std::string& tbl_patterns, const std::vector<std::string> & tbl_types) {
@@ -165,6 +185,16 @@ class ThriftHiveMetastoreHandler : virtual public ThriftHiveMetastoreIf {
   void get_table_objects_by_name(std::vector<Table> & _return, const std::string& dbname, const std::vector<std::string> & tbl_names) {
     // Your implementation goes here
     printf("get_table_objects_by_name\n");
+  }
+
+  void get_table_req(GetTableResult& _return, const GetTableRequest& req) {
+    // Your implementation goes here
+    printf("get_table_req\n");
+  }
+
+  void get_table_objects_by_name_req(GetTablesResult& _return, const GetTablesRequest& req) {
+    // Your implementation goes here
+    printf("get_table_objects_by_name_req\n");
   }
 
   void get_table_names_by_filter(std::vector<std::string> & _return, const std::string& dbname, const std::string& filter, const int16_t max_tables) {
@@ -435,6 +465,16 @@ class ThriftHiveMetastoreHandler : virtual public ThriftHiveMetastoreIf {
   void get_foreign_keys(ForeignKeysResponse& _return, const ForeignKeysRequest& request) {
     // Your implementation goes here
     printf("get_foreign_keys\n");
+  }
+
+  void get_unique_constraints(UniqueConstraintsResponse& _return, const UniqueConstraintsRequest& request) {
+    // Your implementation goes here
+    printf("get_unique_constraints\n");
+  }
+
+  void get_not_null_constraints(NotNullConstraintsResponse& _return, const NotNullConstraintsRequest& request) {
+    // Your implementation goes here
+    printf("get_not_null_constraints\n");
   }
 
   bool update_table_column_statistics(const ColumnStatistics& stats_obj) {
@@ -712,6 +752,11 @@ class ThriftHiveMetastoreHandler : virtual public ThriftHiveMetastoreIf {
     printf("compact\n");
   }
 
+  void compact2(CompactionResponse& _return, const CompactionRequest& rqst) {
+    // Your implementation goes here
+    printf("compact2\n");
+  }
+
   void show_compact(ShowCompactResponse& _return, const ShowCompactRequest& rqst) {
     // Your implementation goes here
     printf("show_compact\n");
@@ -742,6 +787,11 @@ class ThriftHiveMetastoreHandler : virtual public ThriftHiveMetastoreIf {
     printf("flushCache\n");
   }
 
+  void cm_recycle(CmRecycleResponse& _return, const CmRecycleRequest& request) {
+    // Your implementation goes here
+    printf("cm_recycle\n");
+  }
+
   void get_file_metadata_by_expr(GetFileMetadataByExprResult& _return, const GetFileMetadataByExprRequest& req) {
     // Your implementation goes here
     printf("get_file_metadata_by_expr\n");
@@ -765,6 +815,11 @@ class ThriftHiveMetastoreHandler : virtual public ThriftHiveMetastoreIf {
   void cache_file_metadata(CacheFileMetadataResult& _return, const CacheFileMetadataRequest& req) {
     // Your implementation goes here
     printf("cache_file_metadata\n");
+  }
+
+  void get_metastore_db_uuid(std::string& _return) {
+    // Your implementation goes here
+    printf("get_metastore_db_uuid\n");
   }
 
 };

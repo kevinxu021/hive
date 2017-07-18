@@ -21,8 +21,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.List;
 
+import org.apache.calcite.adapter.druid.DruidTable;
 import org.apache.hadoop.hive.druid.DruidStorageHandlerUtils;
-import org.apache.hadoop.hive.ql.optimizer.calcite.druid.DruidTable;
 import org.apache.hadoop.io.NullWritable;
 
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -45,9 +45,12 @@ public class DruidTimeseriesQueryRecordReader
   }
 
   @Override
-  protected List<Result<TimeseriesResultValue>> createResultsList(InputStream content) throws IOException {
+  protected List<Result<TimeseriesResultValue>> createResultsList(InputStream content)
+          throws IOException {
     return DruidStorageHandlerUtils.SMILE_MAPPER.readValue(content,
-            new TypeReference<List<Result<TimeseriesResultValue>>>(){});
+            new TypeReference<List<Result<TimeseriesResultValue>>>() {
+            }
+    );
   }
 
   @Override

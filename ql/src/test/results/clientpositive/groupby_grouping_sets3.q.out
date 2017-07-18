@@ -1,16 +1,8 @@
-PREHOOK: query: -- In this test, 2 files are loaded into table T1. The data contains rows with the same value of a and b,
--- with different number of rows for a and b in each file. Since bucketizedHiveInputFormat is used, 
--- this tests that the aggregate function stores the partial aggregate state correctly even if an 
--- additional MR job is created for processing the grouping sets.
-CREATE TABLE T1(a STRING, b STRING, c STRING) ROW FORMAT DELIMITED FIELDS TERMINATED BY ' ' STORED AS TEXTFILE
+PREHOOK: query: CREATE TABLE T1(a STRING, b STRING, c STRING) ROW FORMAT DELIMITED FIELDS TERMINATED BY ' ' STORED AS TEXTFILE
 PREHOOK: type: CREATETABLE
 PREHOOK: Output: database:default
 PREHOOK: Output: default@T1
-POSTHOOK: query: -- In this test, 2 files are loaded into table T1. The data contains rows with the same value of a and b,
--- with different number of rows for a and b in each file. Since bucketizedHiveInputFormat is used, 
--- this tests that the aggregate function stores the partial aggregate state correctly even if an 
--- additional MR job is created for processing the grouping sets.
-CREATE TABLE T1(a STRING, b STRING, c STRING) ROW FORMAT DELIMITED FIELDS TERMINATED BY ' ' STORED AS TEXTFILE
+POSTHOOK: query: CREATE TABLE T1(a STRING, b STRING, c STRING) ROW FORMAT DELIMITED FIELDS TERMINATED BY ' ' STORED AS TEXTFILE
 POSTHOOK: type: CREATETABLE
 POSTHOOK: Output: database:default
 POSTHOOK: Output: default@T1
@@ -30,18 +22,13 @@ POSTHOOK: query: LOAD DATA LOCAL INPATH '../../data/files/grouping_sets2.txt' IN
 POSTHOOK: type: LOAD
 #### A masked pattern was here ####
 POSTHOOK: Output: default@t1
-PREHOOK: query: -- The query below will execute in a single MR job, since 4 rows are generated per input row
--- (cube of a,b will lead to (a,b), (a, null), (null, b) and (null, null) and 
--- hive.new.job.grouping.set.cardinality is more than 4.
-EXPLAIN
+PREHOOK: query: EXPLAIN
 SELECT a, b, avg(c), count(*) from T1 group by a, b with cube
 PREHOOK: type: QUERY
-POSTHOOK: query: -- The query below will execute in a single MR job, since 4 rows are generated per input row
--- (cube of a,b will lead to (a,b), (a, null), (null, b) and (null, null) and 
--- hive.new.job.grouping.set.cardinality is more than 4.
-EXPLAIN
+POSTHOOK: query: EXPLAIN
 SELECT a, b, avg(c), count(*) from T1 group by a, b with cube
 POSTHOOK: type: QUERY
+Explain
 STAGE DEPENDENCIES:
   Stage-1 is a root stage
   Stage-0 depends on stages: Stage-1
@@ -59,20 +46,80 @@ STAGE PLANS:
               Statistics: Num rows: 1 Data size: 72 Basic stats: COMPLETE Column stats: NONE
               Group By Operator
                 aggregations: avg(c), count()
-                keys: a (type: string), b (type: string), '0' (type: string)
+                keys: a (type: string), b (type: string), 0 (type: int)
                 mode: hash
                 outputColumnNames: _col0, _col1, _col2, _col3, _col4
                 Statistics: Num rows: 4 Data size: 288 Basic stats: COMPLETE Column stats: NONE
                 Reduce Output Operator
-                  key expressions: _col0 (type: string), _col1 (type: string), _col2 (type: string)
+                  key expressions: _col0 (type: string), _col1 (type: string), _col2 (type: int)
                   sort order: +++
-                  Map-reduce partition columns: _col0 (type: string), _col1 (type: string), _col2 (type: string)
+                  Map-reduce partition columns: _col0 (type: string), _col1 (type: string), _col2 (type: int)
                   Statistics: Num rows: 4 Data size: 288 Basic stats: COMPLETE Column stats: NONE
                   value expressions: _col3 (type: struct<count:bigint,sum:double,input:string>), _col4 (type: bigint)
       Reduce Operator Tree:
         Group By Operator
           aggregations: avg(VALUE._col0), count(VALUE._col1)
-          keys: KEY._col0 (type: string), KEY._col1 (type: string), KEY._col2 (type: string)
+          keys: KEY._col0 (type: string), KEY._col1 (type: string), KEY._col2 (type: int)
+          mode: mergepartial
+          outputColumnNames: _col0, _col1, _col3, _col4
+          Statistics: Num rows: 2 Data size: 144 Basic stats: COMPLETE Column stats: NONE
+          pruneGroupingSetId: true
+          Select Operator
+            expressions: _col0 (type: string), _col1 (type: string), _col3 (type: double), _col4 (type: bigint)
+            outputColumnNames: _col0, _col1, _col2, _col3
+            Statistics: Num rows: 2 Data size: 144 Basic stats: COMPLETE Column stats: NONE
+            File Output Operator
+              compressed: false
+              Statistics: Num rows: 2 Data size: 144 Basic stats: COMPLETE Column stats: NONE
+              table:
+                  input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                  output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
+                  serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
+
+  Stage: Stage-0
+    Fetch Operator
+      limit: -1
+      Processor Tree:
+        ListSink
+
+PREHOOK: query: EXPLAIN
+SELECT a, b, avg(c), count(*) from T1 group by cube(a, b)
+PREHOOK: type: QUERY
+POSTHOOK: query: EXPLAIN
+SELECT a, b, avg(c), count(*) from T1 group by cube(a, b)
+POSTHOOK: type: QUERY
+Explain
+STAGE DEPENDENCIES:
+  Stage-1 is a root stage
+  Stage-0 depends on stages: Stage-1
+
+STAGE PLANS:
+  Stage: Stage-1
+    Map Reduce
+      Map Operator Tree:
+          TableScan
+            alias: t1
+            Statistics: Num rows: 1 Data size: 72 Basic stats: COMPLETE Column stats: NONE
+            Select Operator
+              expressions: a (type: string), b (type: string), c (type: string)
+              outputColumnNames: a, b, c
+              Statistics: Num rows: 1 Data size: 72 Basic stats: COMPLETE Column stats: NONE
+              Group By Operator
+                aggregations: avg(c), count()
+                keys: a (type: string), b (type: string), 0 (type: int)
+                mode: hash
+                outputColumnNames: _col0, _col1, _col2, _col3, _col4
+                Statistics: Num rows: 4 Data size: 288 Basic stats: COMPLETE Column stats: NONE
+                Reduce Output Operator
+                  key expressions: _col0 (type: string), _col1 (type: string), _col2 (type: int)
+                  sort order: +++
+                  Map-reduce partition columns: _col0 (type: string), _col1 (type: string), _col2 (type: int)
+                  Statistics: Num rows: 4 Data size: 288 Basic stats: COMPLETE Column stats: NONE
+                  value expressions: _col3 (type: struct<count:bigint,sum:double,input:string>), _col4 (type: bigint)
+      Reduce Operator Tree:
+        Group By Operator
+          aggregations: avg(VALUE._col0), count(VALUE._col1)
+          keys: KEY._col0 (type: string), KEY._col1 (type: string), KEY._col2 (type: int)
           mode: mergepartial
           outputColumnNames: _col0, _col1, _col3, _col4
           Statistics: Num rows: 2 Data size: 144 Basic stats: COMPLETE Column stats: NONE
@@ -103,32 +150,30 @@ POSTHOOK: query: SELECT a, b, avg(c), count(*) from T1 group by a, b with cube
 POSTHOOK: type: QUERY
 POSTHOOK: Input: default@t1
 #### A masked pattern was here ####
-NULL	NULL	3.8333333333333335	12
+a	b	_c2	_c3
+1	1	3.0	2
+1	2	2.0	1
+1	NULL	2.6666666666666665	3
+2	2	5.333333333333333	3
+2	3	5.0	2
+2	NULL	5.2	5
+3	2	8.0	1
+3	NULL	8.0	1
+5	1	2.0	1
+5	NULL	2.0	1
+8	1	1.0	2
+8	NULL	1.0	2
 NULL	1	2.0	5
 NULL	2	5.2	5
 NULL	3	5.0	2
-1	NULL	2.6666666666666665	3
-1	1	3.0	2
-1	2	2.0	1
-2	NULL	5.2	5
-2	2	5.333333333333333	3
-2	3	5.0	2
-3	NULL	8.0	1
-3	2	8.0	1
-5	NULL	2.0	1
-5	1	2.0	1
-8	NULL	1.0	2
-8	1	1.0	2
-PREHOOK: query: -- The query below will execute in 2 MR jobs, since hive.new.job.grouping.set.cardinality is set to 2.
--- The partial aggregation state should be maintained correctly across MR jobs.
-EXPLAIN
+NULL	NULL	3.8333333333333335	12
+PREHOOK: query: EXPLAIN
 SELECT a, b, avg(c), count(*) from T1 group by a, b with cube
 PREHOOK: type: QUERY
-POSTHOOK: query: -- The query below will execute in 2 MR jobs, since hive.new.job.grouping.set.cardinality is set to 2.
--- The partial aggregation state should be maintained correctly across MR jobs.
-EXPLAIN
+POSTHOOK: query: EXPLAIN
 SELECT a, b, avg(c), count(*) from T1 group by a, b with cube
 POSTHOOK: type: QUERY
+Explain
 STAGE DEPENDENCIES:
   Stage-1 is a root stage
   Stage-2 depends on stages: Stage-1
@@ -160,7 +205,7 @@ STAGE PLANS:
       Reduce Operator Tree:
         Group By Operator
           aggregations: avg(VALUE._col0), count(VALUE._col1)
-          keys: KEY._col0 (type: string), KEY._col1 (type: string), '0' (type: string)
+          keys: KEY._col0 (type: string), KEY._col1 (type: string), 0 (type: int)
           mode: partials
           outputColumnNames: _col0, _col1, _col2, _col3, _col4
           Statistics: Num rows: 4 Data size: 288 Basic stats: COMPLETE Column stats: NONE
@@ -176,15 +221,15 @@ STAGE PLANS:
       Map Operator Tree:
           TableScan
             Reduce Output Operator
-              key expressions: _col0 (type: string), _col1 (type: string), _col2 (type: string)
+              key expressions: _col0 (type: string), _col1 (type: string), _col2 (type: int)
               sort order: +++
-              Map-reduce partition columns: _col0 (type: string), _col1 (type: string), _col2 (type: string)
+              Map-reduce partition columns: _col0 (type: string), _col1 (type: string), _col2 (type: int)
               Statistics: Num rows: 4 Data size: 288 Basic stats: COMPLETE Column stats: NONE
               value expressions: _col3 (type: struct<count:bigint,sum:double,input:string>), _col4 (type: bigint)
       Reduce Operator Tree:
         Group By Operator
           aggregations: avg(VALUE._col0), count(VALUE._col1)
-          keys: KEY._col0 (type: string), KEY._col1 (type: string), KEY._col2 (type: string)
+          keys: KEY._col0 (type: string), KEY._col1 (type: string), KEY._col2 (type: int)
           mode: final
           outputColumnNames: _col0, _col1, _col3, _col4
           Statistics: Num rows: 2 Data size: 144 Basic stats: COMPLETE Column stats: NONE
@@ -215,19 +260,20 @@ POSTHOOK: query: SELECT a, b, avg(c), count(*) from T1 group by a, b with cube
 POSTHOOK: type: QUERY
 POSTHOOK: Input: default@t1
 #### A masked pattern was here ####
-NULL	NULL	3.8333333333333335	12
+a	b	_c2	_c3
+1	1	3.0	2
+1	2	2.0	1
+1	NULL	2.6666666666666665	3
+2	2	5.333333333333333	3
+2	3	5.0	2
+2	NULL	5.2	5
+3	2	8.0	1
+3	NULL	8.0	1
+5	1	2.0	1
+5	NULL	2.0	1
+8	1	1.0	2
+8	NULL	1.0	2
 NULL	1	2.0	5
 NULL	2	5.2	5
 NULL	3	5.0	2
-1	NULL	2.6666666666666665	3
-1	1	3.0	2
-1	2	2.0	1
-2	NULL	5.2	5
-2	2	5.333333333333333	3
-2	3	5.0	2
-3	NULL	8.0	1
-3	2	8.0	1
-5	NULL	2.0	1
-5	1	2.0	1
-8	NULL	1.0	2
-8	1	1.0	2
+NULL	NULL	3.8333333333333335	12

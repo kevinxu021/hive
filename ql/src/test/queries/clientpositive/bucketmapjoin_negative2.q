@@ -1,3 +1,5 @@
+set hive.strict.checks.bucketing=false;
+
 set hive.mapred.mode=nonstrict;
 CREATE TABLE srcbucket_mapjoin(key int, value string) CLUSTERED BY (key) INTO 2 BUCKETS STORED AS TEXTFILE;
 load data local inpath '../../data/files/srcbucket20.txt' INTO TABLE srcbucket_mapjoin;
@@ -8,7 +10,7 @@ load data local inpath '../../data/files/srcbucket22.txt' INTO TABLE srcbucket_m
 load data local inpath '../../data/files/srcbucket23.txt' INTO TABLE srcbucket_mapjoin_part_2 partition(ds='2008-04-08');
 load data local inpath '../../data/files/srcbucket22.txt' INTO TABLE srcbucket_mapjoin_part_2 partition(ds='2008-04-09');
 load data local inpath '../../data/files/srcbucket23.txt' INTO TABLE srcbucket_mapjoin_part_2 partition(ds='2008-04-09');
-
+set hive.cbo.enable=false;
 set hive.optimize.bucketmapjoin = true;
 create table bucketmapjoin_tmp_result (key string , value1 string, value2 string);
 

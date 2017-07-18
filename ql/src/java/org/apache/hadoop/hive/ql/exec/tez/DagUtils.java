@@ -31,6 +31,7 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -336,6 +337,11 @@ public class DagUtils {
       setupAutoReducerParallelism(edgeProp, w);
       break;
     }
+    case CUSTOM_SIMPLE_EDGE: {
+      setupQuickStart(edgeProp, w);
+      break;
+    }
+
     default:
       // nothing
     }
@@ -842,12 +848,15 @@ public class DagUtils {
       String hdfsDirPathStr, Configuration conf) throws IOException, LoginException {
     List<LocalResource> tmpResources = new ArrayList<LocalResource>();
 
-    addTempResources(conf, tmpResources, hdfsDirPathStr, LocalResourceType.FILE, getTempFilesFromConf(conf));
-    addTempResources(conf, tmpResources, hdfsDirPathStr, LocalResourceType.ARCHIVE, getTempArchivesFromConf(conf));
+    addTempResources(conf, tmpResources, hdfsDirPathStr, LocalResourceType.FILE,
+        getTempFilesFromConf(conf), null);
+    addTempResources(conf, tmpResources, hdfsDirPathStr, LocalResourceType.ARCHIVE,
+        getTempArchivesFromConf(conf), null);
     return tmpResources;
   }
 
-  private static String[] getTempFilesFromConf(Configuration conf) {
+  public static String[] getTempFilesFromConf(Configuration conf) {
+    if (conf == null) return new String[0]; // In tests.
     String addedFiles = Utilities.getResourceFiles(conf, SessionState.ResourceType.FILE);
     if (StringUtils.isNotBlank(addedFiles)) {
       HiveConf.setVar(conf, ConfVars.HIVEADDEDFILES, addedFiles);
@@ -883,19 +892,32 @@ public class DagUtils {
    * @throws LoginException when getDefaultDestDir fails with the same exception
    */
   public List<LocalResource> localizeTempFiles(String hdfsDirPathStr, Configuration conf,
-      String[] inputOutputJars) throws IOException, LoginException {
+      String[] inputOutputJars, String[] skipJars) throws IOException, LoginException {
     if (inputOutputJars == null) return null;
     List<LocalResource> tmpResources = new ArrayList<LocalResource>();
-    addTempResources(conf, tmpResources, hdfsDirPathStr, LocalResourceType.FILE, inputOutputJars);
+    addTempResources(conf, tmpResources, hdfsDirPathStr,
+        LocalResourceType.FILE, inputOutputJars, skipJars);
     return tmpResources;
   }
 
   private void addTempResources(Configuration conf,
       List<LocalResource> tmpResources, String hdfsDirPathStr,
       LocalResourceType type,
-      String[] files) throws IOException {
+      String[] files, String[] skipFiles) throws IOException {
+    HashSet<Path> skipFileSet = null;
+    if (skipFiles != null) {
+      skipFileSet = new HashSet<>();
+      for (String skipFile : skipFiles) {
+        if (StringUtils.isBlank(skipFile)) continue;
+        skipFileSet.add(new Path(skipFile));
+      }
+    }
     for (String file : files) {
       if (!StringUtils.isNotBlank(file)) {
+        continue;
+      }
+      if (skipFileSet != null && skipFileSet.contains(new Path(file))) {
+        LOG.info("Skipping vertex resource " + file + " that already exists in the session");
         continue;
       }
       Path hdfsFilePath = new Path(hdfsDirPathStr, getResourceBaseName(new Path(file)));
@@ -965,10 +987,9 @@ public class DagUtils {
    * @return true if the file names match else returns false.
    * @throws IOException when any file system related call fails
    */
-  private boolean checkPreExisting(Path src, Path dest, Configuration conf)
+  private boolean checkPreExisting(FileSystem sourceFS, Path src, Path dest, Configuration conf)
     throws IOException {
     FileSystem destFS = dest.getFileSystem(conf);
-    FileSystem sourceFS = src.getFileSystem(conf);
     FileStatus destStatus = FileUtils.getFileStatusOrNull(destFS, dest);
     if (destStatus != null) {
       return (sourceFS.getFileStatus(src).getLen() == destStatus.getLen());
@@ -988,7 +1009,9 @@ public class DagUtils {
   public LocalResource localizeResource(
       Path src, Path dest, LocalResourceType type, Configuration conf) throws IOException {
     FileSystem destFS = dest.getFileSystem(conf);
-    if (src != null && !checkPreExisting(src, dest, conf)) {
+    // We call copyFromLocal below, so we basically assume src is a local file.
+    FileSystem srcFs = FileSystem.getLocal(conf);
+    if (src != null && !checkPreExisting(srcFs, src, dest, conf)) {
       // copy the src to the destination and create local resource.
       // do not overwrite.
       String srcStr = src.toString();
@@ -1000,7 +1023,7 @@ public class DagUtils {
       // authoritative one), don't wait infinitely for the notifier, just wait a little bit
       // and check HDFS before and after.
       if (notifierOld != null
-          && checkOrWaitForTheFile(src, dest, conf, notifierOld, 1, 150, false)) {
+          && checkOrWaitForTheFile(srcFs, src, dest, conf, notifierOld, 1, 150, false)) {
         return createLocalResource(destFS, dest, type, LocalResourceVisibility.PRIVATE);
       }
       try {
@@ -1010,6 +1033,11 @@ public class DagUtils {
         }
         copyNotifiers.remove(srcStr, notifier);
       } catch (IOException e) {
+        if ("Exception while contacting value generator".equals(e.getMessage())) {
+          // HADOOP-13155, fixed version: 2.8.0, 3.0.0-alpha1
+          throw new IOException("copyFromLocalFile failed due to HDFS KMS failure", e);
+        }
+
         LOG.info("Looks like another thread or process is writing the same file");
         int waitAttempts = HiveConf.getIntVar(
             conf, ConfVars.HIVE_LOCALIZE_RESOURCE_NUM_WAIT_ATTEMPTS);
@@ -1017,7 +1045,7 @@ public class DagUtils {
             conf, HiveConf.ConfVars.HIVE_LOCALIZE_RESOURCE_WAIT_INTERVAL, TimeUnit.MILLISECONDS);
         // Only log on the first wait, and check after wait on the last iteration.
         if (!checkOrWaitForTheFile(
-            src, dest, conf, notifierOld, waitAttempts, sleepInterval, true)) {
+            srcFs, src, dest, conf, notifierOld, waitAttempts, sleepInterval, true)) {
           LOG.error("Could not find the jar that was being uploaded");
           throw new IOException("Previous writer likely failed to write " + dest +
               ". Failing because I am unlikely to write too.");
@@ -1032,10 +1060,10 @@ public class DagUtils {
         LocalResourceVisibility.PRIVATE);
   }
 
-  public boolean checkOrWaitForTheFile(Path src, Path dest, Configuration conf, Object notifier,
-      int waitAttempts, long sleepInterval, boolean doLog) throws IOException {
+  public boolean checkOrWaitForTheFile(FileSystem srcFs, Path src, Path dest, Configuration conf,
+      Object notifier, int waitAttempts, long sleepInterval, boolean doLog) throws IOException {
     for (int i = 0; i < waitAttempts; i++) {
-      if (checkPreExisting(src, dest, conf)) return true;
+      if (checkPreExisting(srcFs, src, dest, conf)) return true;
       if (doLog && i == 0) {
         LOG.info("Waiting for the file " + dest + " (" + waitAttempts + " attempts, with "
             + sleepInterval + "ms interval)");
@@ -1054,7 +1082,7 @@ public class DagUtils {
         throw new IOException(interruptedException);
       }
     }
-    return checkPreExisting(src, dest, conf); // One last check.
+    return checkPreExisting(srcFs, src, dest, conf); // One last check.
   }
 
   /**
@@ -1190,7 +1218,8 @@ public class DagUtils {
   /**
    * Set up credentials for the base work on secure clusters
    */
-  public void addCredentials(BaseWork work, DAG dag) {
+  public void addCredentials(BaseWork work, DAG dag) throws IOException {
+    dag.getCredentials().mergeAll(UserGroupInformation.getCurrentUser().getCredentials());
     if (work instanceof MapWork) {
       addCredentials((MapWork) work, dag);
     } else if (work instanceof ReduceWork) {
@@ -1254,6 +1283,20 @@ public class DagUtils {
       pluginConf.setLong(
           ShuffleVertexManager.TEZ_SHUFFLE_VERTEX_MANAGER_DESIRED_TASK_INPUT_SIZE,
           edgeProp.getInputSizePerReducer());
+      UserPayload payload = TezUtils.createUserPayloadFromConf(pluginConf);
+      desc.setUserPayload(payload);
+      v.setVertexManagerPlugin(desc);
+    }
+  }
+
+  private void setupQuickStart(TezEdgeProperty edgeProp, Vertex v)
+    throws IOException {
+    if (!edgeProp.isSlowStart()) {
+      Configuration pluginConf = new Configuration(false);
+      VertexManagerPluginDescriptor desc =
+              VertexManagerPluginDescriptor.create(ShuffleVertexManager.class.getName());
+      pluginConf.setFloat(ShuffleVertexManager.TEZ_SHUFFLE_VERTEX_MANAGER_MIN_SRC_FRACTION, 0);
+      pluginConf.setFloat(ShuffleVertexManager.TEZ_SHUFFLE_VERTEX_MANAGER_MAX_SRC_FRACTION, 0);
       UserPayload payload = TezUtils.createUserPayloadFromConf(pluginConf);
       desc.setUserPayload(payload);
       v.setVertexManagerPlugin(desc);

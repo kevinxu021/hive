@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -46,6 +47,7 @@ import org.apache.hadoop.hive.metastore.api.Function;
 import org.apache.hadoop.hive.metastore.api.FunctionType;
 import org.apache.hadoop.hive.metastore.api.Index;
 import org.apache.hadoop.hive.metastore.api.LongColumnStatsData;
+import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import org.apache.hadoop.hive.metastore.api.Order;
 import org.apache.hadoop.hive.metastore.api.Partition;
@@ -53,6 +55,10 @@ import org.apache.hadoop.hive.metastore.api.PrincipalType;
 import org.apache.hadoop.hive.metastore.api.ResourceType;
 import org.apache.hadoop.hive.metastore.api.ResourceUri;
 import org.apache.hadoop.hive.metastore.api.Role;
+import org.apache.hadoop.hive.metastore.api.SQLForeignKey;
+import org.apache.hadoop.hive.metastore.api.SQLNotNullConstraint;
+import org.apache.hadoop.hive.metastore.api.SQLPrimaryKey;
+import org.apache.hadoop.hive.metastore.api.SQLUniqueConstraint;
 import org.apache.hadoop.hive.metastore.api.SerDeInfo;
 import org.apache.hadoop.hive.metastore.api.SkewedInfo;
 import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
@@ -1391,6 +1397,508 @@ public class TestHBaseStore {
     Assert.assertEquals(decimalData.getNumDVs(), decimalDataFromDB.getNumDVs());
   }
 
+  @Test
+  public void createTableWithPrimaryKey() throws Exception {
+    String tableName = "pktable";
+    String pkName = "test_pk";
+    String pkColNames[] = { "col0" };
+    Table table = createMultiColumnTable(tableName, "int");
+
+    List<SQLPrimaryKey> pk = Arrays.asList(
+        new SQLPrimaryKey(DB, tableName, pkColNames[0], 0, pkName, true, false, true));
+
+    store.createTableWithConstraints(table, pk, null, null, null);
+
+    pk = store.getPrimaryKeys(DB, tableName);
+
+    Assert.assertNotNull(pk);
+    Assert.assertEquals(1, pk.size());
+    Assert.assertEquals(DB, pk.get(0).getTable_db());
+    Assert.assertEquals(tableName, pk.get(0).getTable_name());
+    Assert.assertEquals(pkColNames[0], pk.get(0).getColumn_name());
+    Assert.assertEquals(0, pk.get(0).getKey_seq());
+    Assert.assertEquals(pkName, pk.get(0).getPk_name());
+    Assert.assertTrue(pk.get(0).isEnable_cstr());
+    Assert.assertFalse(pk.get(0).isValidate_cstr());
+    Assert.assertTrue(pk.get(0).isRely_cstr());
+
+    // Drop the primary key
+    store.dropConstraint(DB, tableName, pkName);
+
+    pk = store.getPrimaryKeys(DB, tableName);
+    Assert.assertNull(pk);
+  }
+
+  @Test
+  public void createTableWithForeignKey() throws Exception {
+    String tableName = "fktable";
+    String pkTable = "pktable";
+    String pkName = "test_pk";
+    String fkName = "test_fk";
+    String fkColNames[] = { "col0" };
+    String pkColNames[] = { "pcol0" };
+    Table table = createMultiColumnTable(tableName, "int");
+
+    List<SQLForeignKey> fk = Arrays.asList(
+        new SQLForeignKey(DB, pkTable, pkColNames[0], DB, tableName, fkColNames[0], 0, 1, 2,
+            fkName, pkName, true, false, false));
+
+    store.createTableWithConstraints(table, null, fk, null, null);
+
+    fk = store.getForeignKeys(DB, pkTable, DB, tableName);
+
+    Assert.assertNotNull(fk);
+    Assert.assertEquals(1, fk.size());
+    Assert.assertEquals(DB, fk.get(0).getPktable_db());
+    Assert.assertEquals(pkTable, fk.get(0).getPktable_name());
+    Assert.assertEquals(pkColNames[0], fk.get(0).getPkcolumn_name());
+    Assert.assertEquals(DB, fk.get(0).getFktable_db());
+    Assert.assertEquals(tableName, fk.get(0).getFktable_name());
+    Assert.assertEquals(fkColNames[0], fk.get(0).getFkcolumn_name());
+    Assert.assertEquals(0, fk.get(0).getKey_seq());
+    Assert.assertEquals(1, fk.get(0).getUpdate_rule());
+    Assert.assertEquals(2, fk.get(0).getDelete_rule());
+    Assert.assertEquals(fkName, fk.get(0).getFk_name());
+    Assert.assertEquals(pkName, fk.get(0).getPk_name());
+    Assert.assertTrue(fk.get(0).isEnable_cstr());
+    Assert.assertFalse(fk.get(0).isValidate_cstr());
+    Assert.assertFalse(fk.get(0).isRely_cstr());
+  }
+
+  // Test that we can add a primary key with multiple columns
+  @Test
+  public void addMultiColPrimaryKey() throws Exception {
+    String tableName = "mcpktable";
+    String pkName = "test_pk";
+    String pkColNames[] = { "col0", "col1", "col2" };
+    Table table = createMultiColumnTable(tableName, "int", "varchar(32)", "decimal(10,2)");
+
+    List<SQLPrimaryKey> pk = Arrays.asList(
+        new SQLPrimaryKey(DB, tableName, pkColNames[1], 0, pkName, false, true, true),
+        new SQLPrimaryKey(DB, tableName, pkColNames[2], 1, pkName, false, true, true)
+    );
+
+    store.createTable(table);
+    store.addPrimaryKeys(pk);
+
+    Assert.assertNotNull(pk);
+    Assert.assertEquals(2, pk.size());
+    SQLPrimaryKey[] sorted = pk.toArray(new SQLPrimaryKey[2]);
+    Arrays.sort(sorted, new Comparator<SQLPrimaryKey>() {
+      @Override
+      public int compare(SQLPrimaryKey o1, SQLPrimaryKey o2) {
+        return o1.getColumn_name().compareTo(o2.getColumn_name());
+      }
+    });
+    for (int i = 0; i < 2; i++) {
+      Assert.assertEquals(DB, sorted[i].getTable_db());
+      Assert.assertEquals(tableName, sorted[i].getTable_name());
+      Assert.assertEquals(pkColNames[i+1], sorted[i].getColumn_name());
+      Assert.assertEquals(i, sorted[i].getKey_seq());
+      Assert.assertEquals(pkName, sorted[i].getPk_name());
+      Assert.assertFalse(sorted[i].isEnable_cstr());
+      Assert.assertTrue(sorted[i].isValidate_cstr());
+      Assert.assertTrue(sorted[i].isRely_cstr());
+    }
+
+  }
+
+  // Test that we can create a foreign key with multiple columns
+  @Test
+  public void addMultiColForeignKey() throws Exception {
+    String tableName = "mcfktable";
+    String pkTable = "pktable";
+    String pkName = "test_pk";
+    String fkName = "test_fk";
+    String fkColNames[] = { "col0", "col1", "col2" };
+    String pkColNames[] = { "pcol0", "pcol1" };
+    Table table = createMultiColumnTable(tableName, "int", "double", "timestamp");
+
+    List<SQLForeignKey> fk = Arrays.asList(
+        new SQLForeignKey(DB, pkTable, pkColNames[0], DB, tableName, fkColNames[1], 0, 1, 2,
+            fkName, pkName, true, false, false),
+        new SQLForeignKey(DB, pkTable, pkColNames[1], DB, tableName, fkColNames[2], 1, 1, 2,
+            fkName, pkName, true, false, false)
+        );
+
+    store.createTable(table);
+    store.addForeignKeys(fk);
+
+    fk = store.getForeignKeys(DB, pkTable, DB, tableName);
+
+    Assert.assertNotNull(fk);
+    Assert.assertEquals(2, fk.size());
+    SQLForeignKey[] sorted = fk.toArray(new SQLForeignKey[2]);
+    Arrays.sort(sorted, new Comparator<SQLForeignKey>() {
+      @Override
+      public int compare(SQLForeignKey o1, SQLForeignKey o2) {
+        if (o1.getFk_name().equals(o2.getFk_name())) {
+          return o1.getFkcolumn_name().compareTo(o2.getFkcolumn_name());
+        } else {
+          return o1.getFk_name().compareTo(o2.getFk_name());
+        }
+      }
+    });
+
+    for (int i = 0; i < 2; i++) {
+      Assert.assertEquals(DB, sorted[i].getPktable_db());
+      Assert.assertEquals(pkTable, sorted[i].getPktable_name());
+      Assert.assertEquals(pkColNames[i], sorted[i].getPkcolumn_name());
+      Assert.assertEquals(DB, sorted[i].getFktable_db());
+      Assert.assertEquals(tableName, sorted[i].getFktable_name());
+      Assert.assertEquals(fkColNames[i+1], sorted[i].getFkcolumn_name());
+      Assert.assertEquals(i, sorted[i].getKey_seq());
+      Assert.assertEquals(1, sorted[i].getUpdate_rule());
+      Assert.assertEquals(2, sorted[i].getDelete_rule());
+      Assert.assertEquals(fkName, sorted[i].getFk_name());
+      Assert.assertEquals(pkName, sorted[i].getPk_name());
+      Assert.assertTrue(sorted[i].isEnable_cstr());
+      Assert.assertFalse(sorted[i].isValidate_cstr());
+      Assert.assertFalse(sorted[i].isRely_cstr());
+    }
+
+  }
+
+  // Test that we can add 2 foreign keys at once
+  @Test
+  public void addMultiForeignKeys() throws Exception {
+    String tableName = "mcfktable";
+    String pkTable = "pktable";
+    String pkTable2 = "pktable2";
+    String pkName = "test_pk";
+    String pkName2 = "test_pk2";
+    String fkName = "test_fk";
+    String fkName2 = "test_fk2";
+    String fkColNames[] = { "col0", "col1", "col2" };
+    String pkColNames[] = { "pcol0", "pcol1" };
+    String pkColNames2[] = { "p2col0" };
+    Table table = createMultiColumnTable(tableName, "int", "double", "timestamp");
+
+    List<SQLForeignKey> fk = Arrays.asList(
+        new SQLForeignKey(DB, pkTable, pkColNames[0], DB, tableName, fkColNames[1], 0, 1, 2,
+            fkName, pkName, true, false, true),
+        new SQLForeignKey(DB, pkTable, pkColNames[1], DB, tableName, fkColNames[2], 1, 1, 2,
+            fkName, pkName, true, false, true),
+        new SQLForeignKey(DB, pkTable2, pkColNames2[0], DB, tableName, fkColNames[0], 0, 1, 2,
+            fkName2, pkName2, true, false, true)
+    );
+
+    store.createTable(table);
+    store.addForeignKeys(fk);
+
+    fk = store.getForeignKeys(DB, pkTable, DB, tableName);
+
+    Assert.assertNotNull(fk);
+    Assert.assertEquals(2, fk.size());
+    SQLForeignKey[] sorted = fk.toArray(new SQLForeignKey[2]);
+    Arrays.sort(sorted, new Comparator<SQLForeignKey>() {
+      @Override
+      public int compare(SQLForeignKey o1, SQLForeignKey o2) {
+        if (o1.getFk_name().equals(o2.getFk_name())) {
+          return o1.getFkcolumn_name().compareTo(o2.getFkcolumn_name());
+        } else {
+          return o1.getFk_name().compareTo(o2.getFk_name());
+        }
+      }
+    });
+
+    for (int i = 0; i < 2; i++) {
+      Assert.assertEquals(DB, sorted[i].getPktable_db());
+      Assert.assertEquals(pkTable, sorted[i].getPktable_name());
+      Assert.assertEquals(pkColNames[i], sorted[i].getPkcolumn_name());
+      Assert.assertEquals(DB, sorted[i].getFktable_db());
+      Assert.assertEquals(tableName, sorted[i].getFktable_name());
+      Assert.assertEquals(fkColNames[i+1], sorted[i].getFkcolumn_name());
+      Assert.assertEquals(i, sorted[i].getKey_seq());
+      Assert.assertEquals(1, sorted[i].getUpdate_rule());
+      Assert.assertEquals(2, sorted[i].getDelete_rule());
+      Assert.assertEquals(fkName, sorted[i].getFk_name());
+      Assert.assertEquals(pkName, sorted[i].getPk_name());
+      Assert.assertTrue(sorted[i].isEnable_cstr());
+      Assert.assertFalse(sorted[i].isValidate_cstr());
+      Assert.assertTrue(sorted[i].isRely_cstr());
+    }
+    fk = store.getForeignKeys(DB, pkTable2, DB, tableName);
+    Assert.assertNotNull(fk);
+    Assert.assertEquals(1, fk.size());
+    Assert.assertEquals(DB, fk.get(0).getPktable_db());
+    Assert.assertEquals(pkTable2, fk.get(0).getPktable_name());
+    Assert.assertEquals(pkColNames2[0], fk.get(0).getPkcolumn_name());
+    Assert.assertEquals(DB, fk.get(0).getFktable_db());
+    Assert.assertEquals(tableName, fk.get(0).getFktable_name());
+    Assert.assertEquals(fkColNames[0], fk.get(0).getFkcolumn_name());
+    Assert.assertEquals(0, fk.get(0).getKey_seq());
+    Assert.assertEquals(1, fk.get(0).getUpdate_rule());
+    Assert.assertEquals(2, fk.get(0).getDelete_rule());
+    Assert.assertEquals(fkName2, fk.get(0).getFk_name());
+    Assert.assertEquals(pkName2, fk.get(0).getPk_name());
+    Assert.assertTrue(fk.get(0).isEnable_cstr());
+    Assert.assertFalse(fk.get(0).isValidate_cstr());
+    Assert.assertTrue(fk.get(0).isRely_cstr());
+
+  }
+
+  // Test that we can add a foreign key when one already exists
+  @Test
+  public void addSecondForeignKeys() throws Exception {
+    String tableName = "mcfktable";
+    String pkTable = "pktable";
+    String pkTable2 = "pktable2";
+    String pkName = "test_pk";
+    String pkName2 = "test_pk2";
+    String fkName = "test_fk";
+    String fkName2 = "test_fk2";
+    String fkColNames[] = { "col0", "col1", "col2" };
+    String pkColNames[] = { "pcol0", "pcol1" };
+    String pkColNames2[] = { "p2col0" };
+    Table table = createMultiColumnTable(tableName, "int", "double", "timestamp");
+
+    List<SQLForeignKey> fk = Arrays.asList(
+        new SQLForeignKey(DB, pkTable, pkColNames[0], DB, tableName, fkColNames[1], 0, 1, 2,
+            fkName, pkName, true, false, true),
+        new SQLForeignKey(DB, pkTable, pkColNames[1], DB, tableName, fkColNames[2], 1, 1, 2,
+            fkName, pkName, true, false, true)
+    );
+
+    store.createTable(table);
+    store.addForeignKeys(fk);
+
+    fk = Arrays.asList(
+        new SQLForeignKey(DB, pkTable2, pkColNames2[0], DB, tableName, fkColNames[0], 0, 1, 2,
+            fkName2, pkName2, true, false, true)
+    );
+    store.addForeignKeys(fk);
+
+    fk = store.getForeignKeys(DB, pkTable, DB, tableName);
+
+    Assert.assertNotNull(fk);
+    Assert.assertEquals(2, fk.size());
+    SQLForeignKey[] sorted = fk.toArray(new SQLForeignKey[2]);
+    Arrays.sort(sorted, new Comparator<SQLForeignKey>() {
+      @Override
+      public int compare(SQLForeignKey o1, SQLForeignKey o2) {
+        if (o1.getFk_name().equals(o2.getFk_name())) {
+          return o1.getFkcolumn_name().compareTo(o2.getFkcolumn_name());
+        } else {
+          return o1.getFk_name().compareTo(o2.getFk_name());
+        }
+      }
+    });
+
+    for (int i = 0; i < 2; i++) {
+      Assert.assertEquals(DB, sorted[i].getPktable_db());
+      Assert.assertEquals(pkTable, sorted[i].getPktable_name());
+      Assert.assertEquals(pkColNames[i], sorted[i].getPkcolumn_name());
+      Assert.assertEquals(DB, sorted[i].getFktable_db());
+      Assert.assertEquals(tableName, sorted[i].getFktable_name());
+      Assert.assertEquals(fkColNames[i+1], sorted[i].getFkcolumn_name());
+      Assert.assertEquals(i, sorted[i].getKey_seq());
+      Assert.assertEquals(1, sorted[i].getUpdate_rule());
+      Assert.assertEquals(2, sorted[i].getDelete_rule());
+      Assert.assertEquals(fkName, sorted[i].getFk_name());
+      Assert.assertEquals(pkName, sorted[i].getPk_name());
+      Assert.assertTrue(sorted[i].isEnable_cstr());
+      Assert.assertFalse(sorted[i].isValidate_cstr());
+      Assert.assertTrue(sorted[i].isRely_cstr());
+    }
+
+    fk = store.getForeignKeys(DB, pkTable2, DB, tableName);
+    Assert.assertNotNull(fk);
+    Assert.assertEquals(1, fk.size());
+    Assert.assertEquals(DB, fk.get(0).getPktable_db());
+    Assert.assertEquals(pkTable2, fk.get(0).getPktable_name());
+    Assert.assertEquals(pkColNames2[0], fk.get(0).getPkcolumn_name());
+    Assert.assertEquals(DB, fk.get(0).getFktable_db());
+    Assert.assertEquals(tableName, fk.get(0).getFktable_name());
+    Assert.assertEquals(fkColNames[0], fk.get(0).getFkcolumn_name());
+    Assert.assertEquals(0, fk.get(0).getKey_seq());
+    Assert.assertEquals(1, fk.get(0).getUpdate_rule());
+    Assert.assertEquals(2, fk.get(0).getDelete_rule());
+    Assert.assertEquals(fkName2, fk.get(0).getFk_name());
+    Assert.assertEquals(pkName2, fk.get(0).getPk_name());
+    Assert.assertTrue(fk.get(0).isEnable_cstr());
+    Assert.assertFalse(fk.get(0).isValidate_cstr());
+    Assert.assertTrue(fk.get(0).isRely_cstr());
+
+    // Check that passing null gets all the foreign keys
+    fk = store.getForeignKeys(null, null, DB, tableName);
+    Assert.assertNotNull(fk);
+    Assert.assertEquals(3, fk.size());
+
+    store.dropConstraint(DB, tableName, fkName);
+
+    fk = store.getForeignKeys(DB, pkTable2, DB, tableName);
+    Assert.assertNotNull(fk);
+    Assert.assertEquals(1, fk.size());
+    Assert.assertEquals(DB, fk.get(0).getPktable_db());
+    Assert.assertEquals(pkTable2, fk.get(0).getPktable_name());
+    Assert.assertEquals(pkColNames2[0], fk.get(0).getPkcolumn_name());
+    Assert.assertEquals(DB, fk.get(0).getFktable_db());
+    Assert.assertEquals(tableName, fk.get(0).getFktable_name());
+    Assert.assertEquals(fkColNames[0], fk.get(0).getFkcolumn_name());
+    Assert.assertEquals(0, fk.get(0).getKey_seq());
+    Assert.assertEquals(1, fk.get(0).getUpdate_rule());
+    Assert.assertEquals(2, fk.get(0).getDelete_rule());
+    Assert.assertEquals(fkName2, fk.get(0).getFk_name());
+    Assert.assertEquals(pkName2, fk.get(0).getPk_name());
+    Assert.assertTrue(fk.get(0).isEnable_cstr());
+    Assert.assertFalse(fk.get(0).isValidate_cstr());
+    Assert.assertTrue(fk.get(0).isRely_cstr());
+
+    store.dropConstraint(DB, tableName, fkName2);
+
+    fk = store.getForeignKeys(DB, pkTable2, DB, tableName);
+    Assert.assertNull(fk);
+  }
+
+  // Try adding a primary key when one already exists
+  @Test(expected= MetaException.class)
+  public void doublePrimaryKey() throws Exception {
+    String tableName = "pktable";
+    String pkName = "test_pk";
+    String pkColNames[] = { "col0" };
+    Table table = createMultiColumnTable(tableName, "int");
+
+    List<SQLPrimaryKey> pk = Arrays.asList(
+        new SQLPrimaryKey(DB, tableName, pkColNames[0], 0, pkName, true, false, true));
+
+    store.createTableWithConstraints(table, pk, null, null, null);
+
+    store.addPrimaryKeys(pk);
+  }
+
+  @Test
+  public void createTableWithUniqueConstraint() throws Exception {
+    String tableName = "uktable";
+    String ukName = "test_uk";
+    String ukColNames[] = { "col0" };
+    Table table = createMultiColumnTable(tableName, "int");
+
+    List<SQLUniqueConstraint> uk = Arrays.asList(
+        new SQLUniqueConstraint(DB, tableName, ukColNames[0], 0, ukName, true, false, true));
+
+    store.createTableWithConstraints(table, null, null, uk, null);
+
+    uk = store.getUniqueConstraints(DB, tableName);
+
+    Assert.assertNotNull(uk);
+    Assert.assertEquals(1, uk.size());
+    Assert.assertEquals(DB, uk.get(0).getTable_db());
+    Assert.assertEquals(tableName, uk.get(0).getTable_name());
+    Assert.assertEquals(ukColNames[0], uk.get(0).getColumn_name());
+    Assert.assertEquals(0, uk.get(0).getKey_seq());
+    Assert.assertEquals(ukName, uk.get(0).getUk_name());
+    Assert.assertTrue(uk.get(0).isEnable_cstr());
+    Assert.assertFalse(uk.get(0).isValidate_cstr());
+    Assert.assertTrue(uk.get(0).isRely_cstr());
+
+    // Drop the unique constraint
+    store.dropConstraint(DB, tableName, ukName);
+
+    uk = store.getUniqueConstraints(DB, tableName);
+    Assert.assertNull(uk);
+  }
+
+  @Test
+  public void addMultiUniqueConstraints() throws Exception {
+    String tableName = "mcuktable";
+    String ukName = "test_uk";
+    String ukName2 = "test_uk2";
+    String ukColNames[] = { "col0", "col1" };
+    Table table = createMultiColumnTable(tableName, "int", "double", "timestamp");
+
+    List<SQLUniqueConstraint> uks = Arrays.asList(
+        new SQLUniqueConstraint(DB, tableName, ukColNames[0], 0, ukName, true, false, true),
+        new SQLUniqueConstraint(DB, tableName, ukColNames[1], 0, ukName2, true, false, true)
+    );
+
+    store.createTable(table);
+    store.addUniqueConstraints(uks);
+
+    uks = store.getUniqueConstraints(DB, tableName);
+
+    Assert.assertNotNull(uks);
+    Assert.assertEquals(2, uks.size());
+    SQLUniqueConstraint[] sorted = uks.toArray(new SQLUniqueConstraint[2]);
+    Arrays.sort(sorted, new Comparator<SQLUniqueConstraint>() {
+      @Override
+      public int compare(SQLUniqueConstraint o1, SQLUniqueConstraint o2) {
+        if (o1.getUk_name().equals(o2.getUk_name())) {
+          return o1.getColumn_name().compareTo(o2.getColumn_name());
+        } else {
+          return o1.getUk_name().compareTo(o2.getUk_name());
+        }
+      }
+    });
+
+    Assert.assertEquals(DB, sorted[0].getTable_db());
+    Assert.assertEquals(tableName, sorted[0].getTable_name());
+    Assert.assertEquals(ukColNames[0], sorted[0].getColumn_name());
+    Assert.assertEquals(0, sorted[0].getKey_seq());
+    Assert.assertEquals(ukName, sorted[0].getUk_name());
+    Assert.assertTrue(sorted[0].isEnable_cstr());
+    Assert.assertFalse(sorted[0].isValidate_cstr());
+    Assert.assertTrue(sorted[0].isRely_cstr());
+
+    Assert.assertEquals(DB, sorted[1].getTable_db());
+    Assert.assertEquals(tableName, sorted[1].getTable_name());
+    Assert.assertEquals(ukColNames[1], sorted[1].getColumn_name());
+    Assert.assertEquals(0, sorted[1].getKey_seq());
+    Assert.assertEquals(ukName2, sorted[1].getUk_name());
+    Assert.assertTrue(sorted[1].isEnable_cstr());
+    Assert.assertFalse(sorted[1].isValidate_cstr());
+    Assert.assertTrue(sorted[1].isRely_cstr());
+  }
+
+  @Test
+  public void addMultiNotNullConstraints() throws Exception {
+    String tableName = "mcnntable";
+    String nnName = "test_nn";
+    String nnName2 = "test_nn2";
+    String nnColNames[] = { "col0", "col1" };
+    Table table = createMultiColumnTable(tableName, "int", "double", "timestamp");
+
+    List<SQLNotNullConstraint> nns = Arrays.asList(
+        new SQLNotNullConstraint(DB, tableName, nnColNames[0], nnName, true, false, true),
+        new SQLNotNullConstraint(DB, tableName, nnColNames[1], nnName2, true, false, true)
+    );
+
+    store.createTable(table);
+    store.addNotNullConstraints(nns);
+
+    nns = store.getNotNullConstraints(DB, tableName);
+
+    Assert.assertNotNull(nns);
+    Assert.assertEquals(2, nns.size());
+    SQLNotNullConstraint[] sorted = nns.toArray(new SQLNotNullConstraint[2]);
+    Arrays.sort(sorted, new Comparator<SQLNotNullConstraint>() {
+      @Override
+      public int compare(SQLNotNullConstraint o1, SQLNotNullConstraint o2) {
+        if (o1.getNn_name().equals(o2.getNn_name())) {
+          return o1.getColumn_name().compareTo(o2.getColumn_name());
+        } else {
+          return o1.getNn_name().compareTo(o2.getNn_name());
+        }
+      }
+    });
+
+    Assert.assertEquals(DB, sorted[0].getTable_db());
+    Assert.assertEquals(tableName, sorted[0].getTable_name());
+    Assert.assertEquals(nnColNames[0], sorted[0].getColumn_name());
+    Assert.assertEquals(nnName, sorted[0].getNn_name());
+    Assert.assertTrue(sorted[0].isEnable_cstr());
+    Assert.assertFalse(sorted[0].isValidate_cstr());
+    Assert.assertTrue(sorted[0].isRely_cstr());
+
+    Assert.assertEquals(DB, sorted[1].getTable_db());
+    Assert.assertEquals(tableName, sorted[1].getTable_name());
+    Assert.assertEquals(nnColNames[1], sorted[1].getColumn_name());
+    Assert.assertEquals(nnName2, sorted[1].getNn_name());
+    Assert.assertTrue(sorted[1].isEnable_cstr());
+    Assert.assertFalse(sorted[1].isValidate_cstr());
+    Assert.assertTrue(sorted[1].isRely_cstr());
+  }
+
   private Table createMockTableAndPartition(String partType, String partVal) throws Exception {
     List<FieldSchema> cols = new ArrayList<FieldSchema>();
     cols.add(new FieldSchema("col1", partType, ""));
@@ -1425,6 +1933,22 @@ public class TestHBaseStore {
     store.createTable(table);
     return table;
   }
+
+  private Table createMultiColumnTable(String tblName, String... types) throws Exception {
+    List<FieldSchema> cols = new ArrayList<FieldSchema>();
+    for (int i = 0; i < types.length; i++) cols.add(new FieldSchema("col" + i, types[i], ""));
+    SerDeInfo serde = new SerDeInfo("serde", "seriallib", null);
+    Map<String, String> params = new HashMap<String, String>();
+    params.put("key", "value");
+    StorageDescriptor sd = new StorageDescriptor(cols, "file:/tmp", "input", "output", false, 17,
+        serde, Arrays.asList("bucketcol"), Arrays.asList(new Order("sortcol", 1)), params);
+    int currentTime = (int)(System.currentTimeMillis() / 1000);
+    Table table = new Table(tblName, DB, "me", currentTime, currentTime, 0, sd, cols,
+        emptyParameters, null, null, null);
+    store.createTable(table);
+    return table;
+  }
+
   /**
    * Returns a dummy table level ColumnStatisticsDesc with default values
    */

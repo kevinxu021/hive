@@ -24,13 +24,14 @@
   import="org.apache.hive.common.util.HiveVersionInfo"
   import="org.apache.hive.service.cli.operation.Operation"
   import="org.apache.hive.service.cli.operation.SQLOperation"
-  import="org.apache.hive.service.cli.operation.SQLOperationDisplay"
+  import="org.apache.hadoop.hive.ql.QueryInfo"
   import="org.apache.hive.service.cli.session.SessionManager"
   import="org.apache.hive.service.cli.session.HiveSession"
   import="javax.servlet.ServletContext"
   import="java.util.Collection"
   import="java.util.Date"
   import="java.util.List"
+  import="jodd.util.HtmlEncoder"
 %>
 
 <%
@@ -97,7 +98,7 @@ if (sessionManager != null) {
 
 <section>
 <h2>Active Sessions</h2>
-<table id="attributes_table" class="table table-striped">
+<table class="table table-striped">
     <tr>
         <th>User Name</th>
         <th>IP Address</th>
@@ -127,7 +128,7 @@ for (HiveSession hiveSession: hiveSessions) {
 
 <section>
 <h2>Open Queries</h2>
-<table id="attributes_table" class="table table-striped">
+<table class="table table-striped">
     <tr>
         <th>User Name</th>
         <th>Query</th>
@@ -140,13 +141,13 @@ for (HiveSession hiveSession: hiveSessions) {
     </tr>
     <%
       int queries = 0;
-      Collection<SQLOperationDisplay> operations = sessionManager.getOperationManager().getLiveSqlOperations();
-      for (SQLOperationDisplay operation : operations) {
+      Collection<QueryInfo> operations = sessionManager.getOperationManager().getLiveQueryInfos();
+      for (QueryInfo operation : operations) {
           queries++;
     %>
     <tr>
         <td><%= operation.getUserName() %></td>
-        <td><%= operation.getQueryDisplay() == null ? "Unknown" : operation.getQueryDisplay().getQueryString() %></td>
+        <td><%= HtmlEncoder.strict(operation.getQueryDisplay() == null ? "Unknown" : operation.getQueryDisplay().getQueryString()) %></td>
         <td><%= operation.getExecutionEngine() %>
         <td><%= operation.getState() %></td>
         <td><%= new Date(operation.getBeginTime()) %></td>
@@ -168,7 +169,7 @@ for (HiveSession hiveSession: hiveSessions) {
 
 <section>
 <h2>Last Max <%= conf.get(ConfVars.HIVE_SERVER2_WEBUI_MAX_HISTORIC_QUERIES.varname) %> Closed Queries</h2>
-<table id="attributes_table" class="table table-striped">
+<table class="table table-striped">
     <tr>
         <th>User Name</th>
         <th>Query</th>
@@ -181,18 +182,18 @@ for (HiveSession hiveSession: hiveSessions) {
     </tr>
     <%
       queries = 0;
-      operations = sessionManager.getOperationManager().getHistoricalSQLOperations();
-      for (SQLOperationDisplay operation : operations) {
+      operations = sessionManager.getOperationManager().getHistoricalQueryInfos();
+      for (QueryInfo operation : operations) {
           queries++;
     %>
     <tr>
         <td><%= operation.getUserName() %></td>
-        <td><%= operation.getQueryDisplay() == null ? "Unknown" : operation.getQueryDisplay().getQueryString() %></td>
+        <td><%= HtmlEncoder.strict(operation.getQueryDisplay() == null ? "Unknown" : operation.getQueryDisplay().getQueryString()) %></td>
         <td><%= operation.getExecutionEngine() %>
         <td><%= operation.getState() %></td>
         <td><%= operation.getElapsedTime()/1000 %></td>
         <td><%= operation.getEndTime() == null ? "In Progress" : new Date(operation.getEndTime()) %></td>
-        <td><%= operation.getRuntime()/1000 %></td>
+        <td><%= operation.getRuntime() == null ? "n/a" : operation.getRuntime()/1000 %></td>
         <% String link = "/query_page?operationId=" + operation.getOperationId(); %>
         <td>  <a href= <%= link %>>Drilldown</a> </td>
     </tr>
@@ -212,7 +213,7 @@ for (HiveSession hiveSession: hiveSessions) {
 
     <section>
     <h2>Software Attributes</h2>
-    <table id="attributes_table" class="table table-striped">
+    <table class="table table-striped">
         <tr>
             <th>Attribute Name</th>
             <th>Value</th>

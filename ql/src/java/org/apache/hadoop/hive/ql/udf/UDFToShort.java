@@ -22,6 +22,7 @@ import org.apache.hadoop.hive.ql.exec.UDF;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedExpressions;
 import org.apache.hadoop.hive.ql.exec.vector.expressions.CastDecimalToDouble;
 import org.apache.hadoop.hive.ql.exec.vector.expressions.CastDecimalToLong;
+import org.apache.hadoop.hive.ql.exec.vector.expressions.CastStringToLong;
 import org.apache.hadoop.hive.ql.exec.vector.expressions.gen.CastDoubleToLong;
 import org.apache.hadoop.hive.ql.exec.vector.expressions.CastTimestampToLong;
 import org.apache.hadoop.hive.serde2.io.ByteWritable;
@@ -43,7 +44,7 @@ import org.apache.hadoop.io.Text;
  *
  */
 @VectorizedExpressions({CastTimestampToLong.class, CastDoubleToLong.class,
-    CastDecimalToLong.class})
+    CastDecimalToLong.class, CastStringToLong.class})
 public class UDFToShort extends UDF {
   ShortWritable shortWritable = new ShortWritable();
 
@@ -194,10 +195,10 @@ public class UDFToShort extends UDF {
   }
 
   public ShortWritable evaluate(HiveDecimalWritable i) {
-    if (i == null) {
+    if (i == null || !i.isShort() || !i.isShort()) {
       return null;
     } else {
-      shortWritable.set(i.getHiveDecimal().shortValue());   // TODO: lossy conversion!
+      shortWritable.set(i.shortValue());
       return shortWritable;
     }
   }

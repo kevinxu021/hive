@@ -20,11 +20,11 @@ package org.apache.hadoop.hive.ql.parse;
 import com.google.common.base.Function;
 import com.google.common.base.Predicate;
 import org.apache.hadoop.hive.ql.metadata.Partition;
-import org.apache.hadoop.hive.ql.metadata.Table;
 import org.apache.hadoop.hive.ql.plan.PlanUtils;
 
 import javax.annotation.Nullable;
 import java.text.Collator;
+import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -42,15 +42,18 @@ public class ReplicationSpec {
   private String eventId = null;
   private String currStateId = null;
   private boolean isNoop = false;
-
+  private boolean isLazy = false; // lazy mode => we only list files, and expect that the eventual copy will pull data in.
+  private boolean isReplace = true; // default is that the import mode is insert overwrite
 
   // Key definitions related to replication
   public enum KEY {
     REPL_SCOPE("repl.scope"),
     EVENT_ID("repl.event.id"),
     CURR_STATE_ID("repl.last.id"),
-    NOOP("repl.noop");
-
+    NOOP("repl.noop"),
+    LAZY("repl.lazy"),
+    IS_REPLACE("repl.is.replace")
+    ;
     private final String keyName;
 
     KEY(String s) {
@@ -66,6 +69,34 @@ public class ReplicationSpec {
   public enum SCOPE { NO_REPL, MD_ONLY, REPL };
 
   static private Collator collator = Collator.getInstance();
+
+  /**
+   * Class that extends HashMap with a slightly different put semantic, where
+   * put behaves as follows:
+   *  a) If the key does not already exist, then retains existing HashMap.put behaviour
+   *  b) If the map already contains an entry for the given key, then will replace only
+   *     if the new value is "greater" than the old value.
+   *
+   * The primary goal for this is to track repl updates for dbs and tables, to replace state
+   * only if the state is newer.
+   */
+  public static class ReplStateMap<K,V extends Comparable> extends HashMap<K,V> {
+    @Override
+    public V put(K k, V v){
+      if (!containsKey(k)){
+        return super.put(k,v);
+      }
+      V oldValue = get(k);
+      if (v.compareTo(oldValue) > 0){
+        return super.put(k,v);
+      }
+      // we did no replacement, but return the old value anyway. This
+      // seems most consistent with HashMap behaviour, becuse the "put"
+      // was effectively processed and consumed, although we threw away
+      // the enw value.
+      return oldValue;
+    }
+  }
 
   /**
    * Constructor to construct spec based on either the ASTNode that
@@ -102,32 +133,39 @@ public class ReplicationSpec {
     this((ASTNode)null);
   }
 
-  public  ReplicationSpec(
-      boolean isInReplicationScope, boolean isMetadataOnly, String eventReplicationState,
-      String currentReplicationState, boolean isNoop){
+  public ReplicationSpec(String fromId, String toId) {
+    this(true, false, fromId, toId, false, true, false);
+  }
+
+  public ReplicationSpec(boolean isInReplicationScope, boolean isMetadataOnly,
+                         String eventReplicationState, String currentReplicationState,
+                         boolean isNoop, boolean isLazy, boolean isReplace) {
     this.isInReplicationScope = isInReplicationScope;
     this.isMetadataOnly = isMetadataOnly;
     this.eventId = eventReplicationState;
     this.currStateId = currentReplicationState;
     this.isNoop = isNoop;
+    this.isLazy = isLazy;
+    this.isReplace = isReplace;
   }
 
   public ReplicationSpec(Function<String, String> keyFetcher) {
     String scope = keyFetcher.apply(ReplicationSpec.KEY.REPL_SCOPE.toString());
     this.isMetadataOnly = false;
     this.isInReplicationScope = false;
-    if (scope != null){
-      if (scope.equalsIgnoreCase("metadata")){
+    if (scope != null) {
+      if (scope.equalsIgnoreCase("metadata")) {
         this.isMetadataOnly = true;
         this.isInReplicationScope = true;
-      } else if (scope.equalsIgnoreCase("all")){
+      } else if (scope.equalsIgnoreCase("all")) {
         this.isInReplicationScope = true;
       }
     }
     this.eventId = keyFetcher.apply(ReplicationSpec.KEY.EVENT_ID.toString());
     this.currStateId = keyFetcher.apply(ReplicationSpec.KEY.CURR_STATE_ID.toString());
-    this.isNoop = Boolean.parseBoolean(
-        keyFetcher.apply(ReplicationSpec.KEY.NOOP.toString()));
+    this.isNoop = Boolean.parseBoolean(keyFetcher.apply(ReplicationSpec.KEY.NOOP.toString()));
+    this.isLazy = Boolean.parseBoolean(keyFetcher.apply(ReplicationSpec.KEY.LAZY.toString()));
+    this.isReplace = Boolean.parseBoolean(keyFetcher.apply(ReplicationSpec.KEY.IS_REPLACE.toString()));
   }
 
   /**
@@ -154,50 +192,28 @@ public class ReplicationSpec {
     }
 
     // First try to extract a long value from the strings, and compare them.
-    // If oldReplState is less-than or equal to newReplState, allow.
+    // If oldReplState is less-than newReplState, allow.
     long currReplStateLong = Long.parseLong(currReplState.replaceAll("\\D",""));
     long replacementReplStateLong = Long.parseLong(replacementReplState.replaceAll("\\D",""));
 
-    if ((currReplStateLong != 0) || (replacementReplStateLong != 0)){
-      return ((currReplStateLong - replacementReplStateLong) <= 0);
-    }
-
-    // If the long value of both is 0, though, fall back to lexical comparison.
-
-    // Lexical comparison according to locale will suffice for now, future might add more logic
-    return (collator.compare(currReplState.toLowerCase(), replacementReplState.toLowerCase()) <= 0);
+    return ((currReplStateLong - replacementReplStateLong) < 0);
   }
 
  /**
-   * Determines if a current replication object(current state of dump) is allowed to
-   * replicate-replace-into a given partition
+   * Determines if a current replication object (current state of dump) is allowed to
+   * replicate-replace-into a given metastore object (based on state_id stored in their parameters)
    */
-  public boolean allowReplacementInto(Partition ptn){
-    return allowReplacement(getLastReplicatedStateFromParameters(ptn.getParameters()),this.getCurrentReplicationState());
+  public boolean allowReplacementInto(Map<String, String> params){
+    return allowReplacement(getLastReplicatedStateFromParameters(params),
+                            getCurrentReplicationState());
   }
 
   /**
-   * Determines if a current replication event specification is allowed to
-   * replicate-replace-into a given partition
+   * Determines if a current replication event (based on event id) is allowed to
+   * replicate-replace-into a given metastore object (based on state_id stored in their parameters)
    */
-  public boolean allowEventReplacementInto(Partition ptn){
-    return allowReplacement(getLastReplicatedStateFromParameters(ptn.getParameters()),this.getReplicationState());
-  }
-
-  /**
-   * Determines if a current replication object(current state of dump) is allowed to
-   * replicate-replace-into a given table
-   */
-  public boolean allowReplacementInto(Table table) {
-    return allowReplacement(getLastReplicatedStateFromParameters(table.getParameters()),this.getCurrentReplicationState());
-  }
-
-  /**
-   * Determines if a current replication event specification is allowed to
-   * replicate-replace-into a given table
-   */
-  public boolean allowEventReplacementInto(Table table) {
-    return allowReplacement(getLastReplicatedStateFromParameters(table.getParameters()),this.getReplicationState());
+  public boolean allowEventReplacementInto(Map<String, String> params){
+    return allowReplacement(getLastReplicatedStateFromParameters(params), getReplicationState());
   }
 
   /**
@@ -211,7 +227,7 @@ public class ReplicationSpec {
         if (partition == null){
           return false;
         }
-        return (allowEventReplacementInto(partition));
+        return (allowEventReplacementInto(partition.getParameters()));
       }
     };
   }
@@ -248,6 +264,19 @@ public class ReplicationSpec {
     return isMetadataOnly;
   }
 
+  public void setIsMetadataOnly(boolean isMetadataOnly){
+    this.isMetadataOnly = isMetadataOnly;
+  }
+
+  /**
+   * @return true if this statement refers to insert-into or insert-overwrite operation.
+   */
+  public boolean isReplace(){ return isReplace; }
+
+  public void setIsReplace(boolean isReplace){
+    this.isReplace = isReplace;
+  }
+
   /**
    * @return the replication state of the event that spawned this statement
    */
@@ -280,6 +309,20 @@ public class ReplicationSpec {
     this.isNoop = isNoop;
   }
 
+  /**
+   * @return whether or not the current replication action is set to be lazy
+   */
+  public boolean isLazy() {
+    return isLazy;
+  }
+
+  /**
+   * @param isLazy whether or not the current replication action should be lazy
+   */
+  public void setLazy(boolean isLazy){
+    this.isLazy = isLazy;
+  }
+
   public String get(KEY key) {
     switch (key){
       case REPL_SCOPE:
@@ -297,6 +340,10 @@ public class ReplicationSpec {
         return getCurrentReplicationState();
       case NOOP:
         return String.valueOf(isNoop());
+      case LAZY:
+        return String.valueOf(isLazy());
+      case IS_REPLACE:
+        return String.valueOf(isReplace());
     }
     return null;
   }

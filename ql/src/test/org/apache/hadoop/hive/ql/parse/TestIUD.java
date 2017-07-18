@@ -32,7 +32,6 @@ import org.junit.Test;
  */
 public class TestIUD {
   private static HiveConf conf;
-
   private ParseDriver pd;
 
   @BeforeClass
@@ -47,6 +46,9 @@ public class TestIUD {
   }
 
   ASTNode parse(String query) throws ParseException {
+    return parse(query, pd, conf);
+  }
+  static ASTNode parse(String query, ParseDriver pd, HiveConf conf) throws ParseException {
     ASTNode nd = null;
     try {
       nd = pd.parse(query, new Context(conf));
@@ -71,7 +73,7 @@ public class TestIUD {
         "(tok_tabname src) " +
         "(tok_where " +
           "(and " +
-            "(tok_function tok_isnotnull (tok_table_or_col key)) " +
+            "(tok_function isnotnull (tok_table_or_col key)) " +
             "(< (. (tok_table_or_col src) value) 0))))",
       ast.toStringTree());
   }
@@ -108,7 +110,7 @@ public class TestIUD {
         "(tok_set_columns_clause " +
           "(= " +
             "(tok_table_or_col key) 3)) " +
-        "(tok_where (tok_function tok_isnull (tok_table_or_col value))))",
+        "(tok_where (tok_function isnull (tok_table_or_col value))))",
       ast.toStringTree());
   }
   @Test
@@ -120,7 +122,7 @@ public class TestIUD {
         "(= (tok_table_or_col key) (+ (- 3) (% (* 5 9) 8))) " +
         "(= (tok_table_or_col val) (tok_function tok_int (+ 6.1 (tok_table_or_col c)))) " +
         "(= (tok_table_or_col d) (- (tok_table_or_col d) 1))) " +
-        "(tok_where (tok_function tok_isnull (tok_table_or_col value))))",
+        "(tok_where (tok_function isnull (tok_table_or_col value))))",
       ast.toStringTree());
   }
   @Test
@@ -148,7 +150,7 @@ public class TestIUD {
         "(tok_select " +
           "(tok_selexpr (. (tok_table_or_col pvs) viewtime)) " +
           "(tok_selexpr (. (tok_table_or_col pvs) userid))) " +
-        "(tok_where (tok_function tok_isnull (. (tok_table_or_col pvs) userid)))))",
+        "(tok_where (tok_function isnull (. (tok_table_or_col pvs) userid)))))",
       ast.toStringTree());
   }
   @Test
@@ -158,7 +160,9 @@ public class TestIUD {
       Assert.assertFalse("Expected ParseException", true);
     }
     catch(ParseException ex) {
-      Assert.assertEquals("Failure didn't match.", "line 1:23 missing EOF at '(' near 'values'",ex.getMessage());
+      Assert.assertEquals("Failure didn't match.",
+          "line 1:24 cannot recognize input near 'values' '(' '3' in joinSource",
+          ex.getMessage());
     }
   }
   @Test

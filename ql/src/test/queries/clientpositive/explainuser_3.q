@@ -1,3 +1,5 @@
+set hive.strict.checks.bucketing=false;
+
 set hive.security.authorization.manager=org.apache.hadoop.hive.ql.security.authorization.DefaultHiveAuthorizationProvider;
 set hive.metastore.filter.hook=org.apache.hadoop.hive.metastore.DefaultMetaStoreFilterHookImpl;
 set hive.mapred.mode=nonstrict;
@@ -11,6 +13,7 @@ set hive.vectorized.execution.enabled=true;
 
 CREATE TABLE acid_vectorized(a INT, b STRING) CLUSTERED BY(a) INTO 2 BUCKETS STORED AS ORC TBLPROPERTIES ('transactional'='true');
 insert into table acid_vectorized select cint, cstring1 from alltypesorc where cint is not null order by cint limit 10;
+analyze table acid_vectorized compute statistics for columns;
 explain select a, b from acid_vectorized order by a, b;
 
 explain select key, value

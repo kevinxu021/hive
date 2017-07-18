@@ -20,10 +20,10 @@ package org.apache.hadoop.hive.ql.optimizer;
 
 import java.util.Stack;
 
+import org.apache.hadoop.hive.ql.exec.OperatorUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
-import org.apache.hadoop.hive.ql.exec.Operator;
 import org.apache.hadoop.hive.ql.lib.Node;
 import org.apache.hadoop.hive.ql.lib.NodeProcessor;
 import org.apache.hadoop.hive.ql.lib.NodeProcessorCtx;
@@ -54,15 +54,7 @@ public class SparkRemoveDynamicPruningBySize implements NodeProcessor {
 
     if (desc.getStatistics().getDataSize() > context.getConf()
         .getLongVar(ConfVars.SPARK_DYNAMIC_PARTITION_PRUNING_MAX_DATA_SIZE)) {
-      Operator<?> child = op;
-      Operator<?> curr = op;
-
-      while (curr.getChildOperators().size() <= 1) {
-        child = curr;
-        curr = curr.getParentOperators().get(0);
-      }
-
-      curr.removeChild(child);
+      OperatorUtils.removeBranch(op);
       // at this point we've found the fork in the op pipeline that has the pruning as a child plan.
       LOG.info("Disabling dynamic pruning for: "
           + desc.getTableScan().getName()

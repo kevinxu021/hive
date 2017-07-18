@@ -1,6 +1,6 @@
 set hive.explain.user=false;
-set hive.exec.submitviachild=true;
-set hive.exec.submit.local.task.via.child=true;
+set hive.exec.submitviachild=false;
+set hive.exec.submit.local.task.via.child=false;
 
 create table if not exists alltypes_parquet (
   cint int, 
@@ -21,7 +21,7 @@ insert overwrite table alltypes_parquet
   
 SET hive.vectorized.execution.enabled=true;
   
-explain select * 
+explain vectorization select * 
   from alltypes_parquet
   where cint = 528534767 
   limit 10;
@@ -30,7 +30,7 @@ select *
   where cint = 528534767 
   limit 10;
 
-explain select ctinyint, 
+explain vectorization select ctinyint, 
   max(cint), 
   min(csmallint), 
   count(cstring1), 

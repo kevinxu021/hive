@@ -77,7 +77,8 @@ public class Optimizer {
       Splitter.on(",").trimResults().omitEmptyStrings().split(
         Strings.nullToEmpty(HiveConf.getVar(hiveConf, HiveConf.ConfVars.POSTEXECHOOKS))));
     if (postExecHooks.contains("org.apache.hadoop.hive.ql.hooks.PostExecutePrinter")
-        || postExecHooks.contains("org.apache.hadoop.hive.ql.hooks.LineageLogger")) {
+        || postExecHooks.contains("org.apache.hadoop.hive.ql.hooks.LineageLogger")
+        || postExecHooks.contains("org.apache.atlas.hive.hook.HiveHook")) {
       transformations.add(new Generator());
     }
 
@@ -122,6 +123,8 @@ public class Optimizer {
       transformations.add(new SortedDynPartitionOptimizer());
     }
 
+    transformations.add(new SortedDynPartitionTimeGranularityOptimizer());
+
     if (HiveConf.getBoolVar(hiveConf, HiveConf.ConfVars.HIVEOPTPPD)) {
       transformations.add(new PartitionPruner());
       transformations.add(new PartitionConditionRemover());
@@ -141,6 +144,10 @@ public class Optimizer {
       transformations.add(new GroupByOptimizer());
     }
     transformations.add(new ColumnPruner());
+    if (HiveConf.getBoolVar(hiveConf, HiveConf.ConfVars.HIVECOUNTDISTINCTOPTIMIZER)
+        && (HiveConf.getBoolVar(hiveConf, HiveConf.ConfVars.HIVE_IN_TEST) || isTezExecEngine)) {
+      transformations.add(new CountDistinctRewriteProc());
+    }
     if (HiveConf.getBoolVar(hiveConf, HiveConf.ConfVars.HIVE_OPTIMIZE_SKEWJOIN_COMPILETIME)) {
       if (!isTezExecEngine) {
         transformations.add(new SkewJoinOptimizer());
@@ -207,7 +214,7 @@ public class Optimizer {
     if(HiveConf.getBoolVar(hiveConf, HiveConf.ConfVars.HIVEOPTCORRELATION) &&
         !HiveConf.getBoolVar(hiveConf, HiveConf.ConfVars.HIVEGROUPBYSKEW) &&
         !HiveConf.getBoolVar(hiveConf, HiveConf.ConfVars.HIVE_OPTIMIZE_SKEWJOIN_COMPILETIME) &&
-        !isTezExecEngine) {
+        !isTezExecEngine && !isSparkExecEngine) {
       transformations.add(new CorrelationOptimizer());
     }
     if (HiveConf.getFloatVar(hiveConf, HiveConf.ConfVars.HIVELIMITPUSHDOWNMEMORYUSAGE) > 0) {

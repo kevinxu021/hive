@@ -94,7 +94,7 @@ public class MoveTask extends Task<MoveWork> implements Serializable {
 
       FileSystem fs = sourcePath.getFileSystem(conf);
       if (isDfsDir) {
-        moveFileInDfs (sourcePath, targetPath, fs);
+        moveFileInDfs (sourcePath, targetPath, conf);
       } else {
         // This is a local file
         FileSystem dstFs = FileSystem.getLocal(conf);
@@ -106,21 +106,36 @@ public class MoveTask extends Task<MoveWork> implements Serializable {
     }
   }
 
-  private void moveFileInDfs (Path sourcePath, Path targetPath, FileSystem fs)
+  private void moveFileInDfs (Path sourcePath, Path targetPath, HiveConf conf)
       throws HiveException, IOException {
+
+    final FileSystem srcFs, tgtFs;
+    try {
+      tgtFs = targetPath.getFileSystem(conf);
+    } catch (IOException e) {
+      LOG.error("Failed to get dest fs", e);
+      throw new HiveException(e.getMessage(), e);
+    }
+    try {
+      srcFs = sourcePath.getFileSystem(conf);
+    } catch (IOException e) {
+      LOG.error("Failed to get src fs", e);
+      throw new HiveException(e.getMessage(), e);
+    }
+
     // if source exists, rename. Otherwise, create a empty directory
-    if (fs.exists(sourcePath)) {
+    if (srcFs.exists(sourcePath)) {
       Path deletePath = null;
       // If it multiple level of folder are there fs.rename is failing so first
       // create the targetpath.getParent() if it not exist
       if (HiveConf.getBoolVar(conf, HiveConf.ConfVars.HIVE_INSERT_INTO_MULTILEVEL_DIRS)) {
-        deletePath = createTargetPath(targetPath, fs);
+        deletePath = createTargetPath(targetPath, tgtFs);
       }
       Hive.clearDestForSubDirSrc(conf, targetPath, sourcePath, false);
       if (!Hive.moveFile(conf, sourcePath, targetPath, true, false)) {
         try {
           if (deletePath != null) {
-            fs.delete(deletePath, true);
+            tgtFs.delete(deletePath, true);
           }
         } catch (IOException e) {
           LOG.info("Unable to delete the path created for facilitating rename"
@@ -129,7 +144,7 @@ public class MoveTask extends Task<MoveWork> implements Serializable {
         throw new HiveException("Unable to rename: " + sourcePath
             + " to: " + targetPath);
       }
-    } else if (!fs.mkdirs(targetPath)) {
+    } else if (!tgtFs.mkdirs(targetPath)) {
       throw new HiveException("Unable to make directory: " + targetPath);
     }
   }
@@ -152,7 +167,7 @@ public class MoveTask extends Task<MoveWork> implements Serializable {
         throw new HiveException("Target " + targetPath + " is not a local directory.");
       }
     } else {
-      if (!FileUtils.mkdir(dstFs, targetPath, false, conf)) {
+      if (!FileUtils.mkdir(dstFs, targetPath, conf)) {
         throw new HiveException("Failed to create local target directory " + targetPath);
       }
     }
@@ -181,13 +196,6 @@ public class MoveTask extends Task<MoveWork> implements Serializable {
         actualPath = actualPath.getParent();
       }
       fs.mkdirs(mkDirPath);
-      if (HiveConf.getBoolVar(conf, HiveConf.ConfVars.HIVE_WAREHOUSE_SUBDIR_INHERIT_PERMS)) {
-        try {
-          HdfsUtils.setFullFileStatus(conf, new HdfsUtils.HadoopFileStatus(conf, fs, actualPath), fs, mkDirPath, true);
-        } catch (Exception e) {
-          LOG.warn("Error setting permissions or group of " + actualPath, e);
-        }
-      }
     }
     return deletePath;
   }
@@ -206,6 +214,10 @@ public class MoveTask extends Task<MoveWork> implements Serializable {
     }
 
     Context ctx = driverContext.getCtx();
+    if(ctx.getHiveTxnManager().supportsAcid()) {
+      //Acid LM doesn't maintain getOutputLockObjects(); this 'if' just makes it more explicit
+      return;
+    }
     HiveLockManager lockMgr = ctx.getHiveTxnManager().getLockManager();
     WriteEntity output = ctx.getLoadTableOutputMap().get(ltd);
     List<HiveLockObj> lockObjects = ctx.getOutputLockObjects().get(output);
@@ -362,9 +374,8 @@ public class MoveTask extends Task<MoveWork> implements Serializable {
               work.getLoadTableWork().getWriteType() != AcidUtils.Operation.NOT_ACID,
               hasFollowingStatsTask());
           if (work.getOutputs() != null) {
-            work.getOutputs().add(new WriteEntity(table,
-                (tbd.getReplace() ? WriteEntity.WriteType.INSERT_OVERWRITE :
-                WriteEntity.WriteType.INSERT)));
+            DDLTask.addIfAbsentByName(new WriteEntity(table,
+              getWriteType(tbd, work.getLoadTableWork().getWriteType())), work.getOutputs());
           }
         } else {
           LOG.info("Partition is: " + tbd.getPartitionSpec().toString());
@@ -420,10 +431,6 @@ public class MoveTask extends Task<MoveWork> implements Serializable {
 
             List<LinkedHashMap<String, String>> dps = Utilities.getFullDPSpecs(conf, dpCtx);
 
-            // publish DP columns to its subscribers
-            if (dps != null && dps.size() > 0) {
-              pushFeed(FeedType.DYNAMIC_PARTITIONS, dps);
-            }
             console.printInfo(System.getProperty("line.separator"));
             long startTime = System.currentTimeMillis();
             // load the list of DP partitions and return the list of partition specs
@@ -445,8 +452,15 @@ public class MoveTask extends Task<MoveWork> implements Serializable {
                 SessionState.get().getTxnMgr().getCurrentTxnId(), hasFollowingStatsTask(),
                 work.getLoadTableWork().getWriteType());
 
-            console.printInfo("\t Time taken to load dynamic partitions: "  +
-                (System.currentTimeMillis() - startTime)/1000.0 + " seconds");
+            // publish DP columns to its subscribers
+            if (dps != null && dps.size() > 0) {
+              pushFeed(FeedType.DYNAMIC_PARTITIONS, dp.values());
+            }
+
+            String loadTime = "\t Time taken to load dynamic partitions: "  +
+                (System.currentTimeMillis() - startTime)/1000.0 + " seconds";
+            console.printInfo(loadTime);
+            LOG.info(loadTime);
 
             if (dp.size() == 0 && conf.getBoolVar(HiveConf.ConfVars.HIVE_ERROR_ON_EMPTY_PARTITION)) {
               throw new HiveException("This query creates no partitions." +
@@ -465,10 +479,9 @@ public class MoveTask extends Task<MoveWork> implements Serializable {
               }
 
               WriteEntity enty = new WriteEntity(partn,
-                  (tbd.getReplace() ? WriteEntity.WriteType.INSERT_OVERWRITE :
-                      WriteEntity.WriteType.INSERT));
+                getWriteType(tbd, work.getLoadTableWork().getWriteType()));
               if (work.getOutputs() != null) {
-                work.getOutputs().add(enty);
+                DDLTask.addIfAbsentByName(enty, work.getOutputs());
               }
               // Need to update the queryPlan's output as well so that post-exec hook get executed.
               // This is only needed for dynamic partitioning since for SP the the WriteEntity is
@@ -513,9 +526,8 @@ public class MoveTask extends Task<MoveWork> implements Serializable {
             dc = new DataContainer(table.getTTable(), partn.getTPartition());
             // add this partition to post-execution hook
             if (work.getOutputs() != null) {
-              work.getOutputs().add(new WriteEntity(partn,
-                  (tbd.getReplace() ? WriteEntity.WriteType.INSERT_OVERWRITE
-                      : WriteEntity.WriteType.INSERT)));
+              DDLTask.addIfAbsentByName(new WriteEntity(partn,
+                getWriteType(tbd, work.getLoadTableWork().getWriteType())), work.getOutputs());
             }
          }
         }
@@ -550,7 +562,24 @@ public class MoveTask extends Task<MoveWork> implements Serializable {
       return (1);
     }
   }
-
+  /**
+   * so to make sure we crate WriteEntity with the right WriteType.  This is (at this point) only
+   * for consistency since LockManager (which is the only thing that pays attention to WriteType)
+   * has done it's job before the query ran.
+   */
+  WriteEntity.WriteType getWriteType(LoadTableDesc tbd, AcidUtils.Operation operation) {
+    if(tbd.getReplace()) {
+      return WriteEntity.WriteType.INSERT_OVERWRITE;
+    }
+    switch (operation) {
+      case DELETE:
+        return WriteEntity.WriteType.DELETE;
+      case UPDATE:
+        return WriteEntity.WriteType.UPDATE;
+      default:
+        return WriteEntity.WriteType.INSERT;
+    }
+  }
   private boolean isSkewedStoredAsDirs(LoadTableDesc tbd) {
     return (tbd.getLbCtx() == null) ? false : tbd.getLbCtx()
         .isSkewedStoredAsDir();

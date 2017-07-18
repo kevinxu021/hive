@@ -39,6 +39,7 @@ import org.apache.hadoop.hive.ql.plan.BaseWork;
 import org.apache.hadoop.hive.ql.plan.SparkWork;
 import org.apache.hadoop.hive.ql.session.SessionState;
 import org.apache.hadoop.io.BytesWritable;
+import org.apache.hive.spark.client.SparkClientUtilities;
 import org.apache.spark.Dependency;
 import org.apache.spark.SparkConf;
 import org.apache.spark.api.java.JavaPairRDD;
@@ -77,7 +78,7 @@ public class SparkUtilities {
     Path localFile = new Path(source.getPath());
     Path remoteFile = new Path(SessionState.get().getSparkSession().getHDFSSessionDir(),
         getFileName(source));
-    FileSystem fileSystem = FileSystem.get(conf);
+    FileSystem fileSystem = FileSystem.get(remoteFile.toUri(), conf);
     // Overwrite if the remote file already exists. Whether the file can be added
     // on executor is up to spark, i.e. spark.files.overwrite
     fileSystem.copyFromLocalFile(false, true, localFile, remoteFile);
@@ -87,8 +88,11 @@ public class SparkUtilities {
 
   // checks if a resource has to be uploaded to HDFS for yarn-cluster mode
   public static boolean needUploadToHDFS(URI source, SparkConf sparkConf) {
-    return sparkConf.get("spark.master").equals("yarn-cluster") &&
-        !source.getScheme().equals("hdfs");
+    String master = sparkConf.get("spark.master");
+    String deployMode = sparkConf.contains("spark.submit.deployMode") ?
+        sparkConf.get("spark.submit.deployMode") : null;
+    return SparkClientUtilities.isYarnClusterMode(master, deployMode) &&
+        !(source.getScheme().equals("hdfs") || source.getScheme().equals("viewfs"));
   }
 
   private static String getFileName(URI uri) {
@@ -102,7 +106,7 @@ public class SparkUtilities {
 
   public static boolean isDedicatedCluster(Configuration conf) {
     String master = conf.get("spark.master");
-    return master.startsWith("yarn-") || master.startsWith("local");
+    return SparkClientUtilities.isYarnMaster(master) || SparkClientUtilities.isLocalMaster(master);
   }
 
   public static SparkSession getSparkSession(HiveConf conf,

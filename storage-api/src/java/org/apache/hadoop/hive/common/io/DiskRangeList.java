@@ -31,8 +31,12 @@ public class DiskRangeList extends DiskRange {
     super(offset, end);
   }
 
-  /** Replaces this element with another in the list; returns the new element. */
+  /** Replaces this element with another in the list; returns the new element.
+   * @param other the disk range to swap into this list
+   * @return the new element
+   */
   public DiskRangeList replaceSelfWith(DiskRangeList other) {
+    checkArg(other);
     other.prev = this.prev;
     other.next = this.next;
     if (this.prev != null) {
@@ -45,11 +49,24 @@ public class DiskRangeList extends DiskRange {
     return other;
   }
 
+  private void checkArg(DiskRangeList other) throws AssertionError {
+    if (other == this) {
+      // The only case where duplicate elements matter... the others are handled by the below.
+      throw new AssertionError("Inserting self into the list [" + other + "]");
+    }
+    if (other.prev != null || other.next != null) {
+      throw new AssertionError("[" + other + "] is part of another list; prev ["
+          + other.prev + "], next [" + other.next + "]");
+    }
+  }
+
   /**
    * Inserts an intersecting range before current in the list and adjusts offset accordingly.
-   * @returns the new element.
+   * @param other the element to insert
+   * @return the new element.
    */
   public DiskRangeList insertPartBefore(DiskRangeList other) {
+    checkArg(other);
     assert other.end >= this.offset;
     this.offset = other.end;
     other.prev = this.prev;
@@ -63,9 +80,11 @@ public class DiskRangeList extends DiskRange {
 
   /**
    * Inserts an element after current in the list.
-   * @returns the new element.
+   * @param other the new element to insert
+   * @return the new element.
    * */
   public DiskRangeList insertAfter(DiskRangeList other) {
+    checkArg(other);
     other.next = this.next;
     other.prev = this;
     if (this.next != null) {
@@ -77,7 +96,8 @@ public class DiskRangeList extends DiskRange {
 
   /**
    * Inserts an intersecting range after current in the list and adjusts offset accordingly.
-   * @returns the new element.
+   * @param other the new element to insert
+   * @return the new element.
    */
   public DiskRangeList insertPartAfter(DiskRangeList other) {
     assert other.offset <= this.end;
@@ -88,6 +108,9 @@ public class DiskRangeList extends DiskRange {
   /** Removes an element after current from the list. */
   public void removeAfter() {
     DiskRangeList other = this.next;
+    if (this == other) {
+      throw new AssertionError("Invalid duplicate [" + other + "]");
+    }
     this.next = other.next;
     if (this.next != null) {
       this.next.prev = this;
@@ -97,6 +120,9 @@ public class DiskRangeList extends DiskRange {
 
   /** Removes the current element from the list. */
   public void removeSelf() {
+    if (this.prev == this || this.next == this) {
+      throw new AssertionError("Invalid duplicate [" + this + "]");
+    }
     if (this.prev != null) {
       this.prev.next = this.next;
     }
@@ -106,7 +132,10 @@ public class DiskRangeList extends DiskRange {
     this.next = this.prev = null;
   }
 
-  /** Splits current element in the list, using DiskRange::slice */
+  /** Splits current element in the list, using DiskRange::slice.
+   * @param cOffset the position to split the list
+   * @return the split list
+   */
   public final DiskRangeList split(long cOffset) {
     insertAfter((DiskRangeList)this.sliceAndShift(cOffset, end, 0));
     return replaceSelfWith((DiskRangeList)this.sliceAndShift(offset, cOffset, 0));
@@ -160,7 +189,7 @@ public class DiskRangeList extends DiskRange {
     public void addOrMerge(long offset, long end, boolean doMerge, boolean doLogNew) {
       if (doMerge && tail != null && tail.merge(offset, end)) return;
       if (doLogNew) {
-        LOG.info("Creating new range; last range (which can include some previous adds) was "
+        LOG.debug("Creating new range; last range (which can include some previous adds) was "
             + tail);
       }
       DiskRangeList node = new DiskRangeList(offset, end);
@@ -206,5 +235,11 @@ public class DiskRangeList extends DiskRange {
       this.next = result.prev = null;
       return result;
     }
+  }
+
+  public void setEnd(long newEnd) {
+    assert newEnd >= this.offset;
+    assert this.next == null || this.next.offset >= newEnd;
+    this.end = newEnd;
   }
 }

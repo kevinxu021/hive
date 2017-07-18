@@ -20,11 +20,15 @@ package org.apache.hadoop.hive.llap.daemon.impl;
 import static org.apache.hadoop.hive.llap.daemon.impl.TaskExecutorTestHelpers.createMockRequest;
 import static org.apache.hadoop.hive.llap.daemon.impl.TaskExecutorTestHelpers.createSubmitWorkRequestProto;
 import static org.apache.hadoop.hive.llap.daemon.impl.TaskExecutorTestHelpers.createTaskWrapper;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.*;
+
+import org.apache.hadoop.yarn.util.SystemClock;
+
+import org.apache.hadoop.hive.llap.testhelpers.ControlledClock;
+
+import java.util.concurrent.TimeUnit;
+
+import org.apache.hadoop.yarn.util.Clock;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -39,6 +43,7 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hive.llap.daemon.SchedulerFragmentCompletingListener;
 import org.apache.hadoop.hive.llap.daemon.impl.TaskExecutorService.TaskWrapper;
 import org.apache.hadoop.hive.llap.daemon.impl.TaskExecutorTestHelpers.MockRequest;
 import org.apache.hadoop.hive.llap.daemon.impl.comparator.ShortestJobFirstComparator;
@@ -49,10 +54,10 @@ public class TestTaskExecutorService {
 
   @Test(timeout = 5000)
   public void testPreemptionQueueComparator() throws InterruptedException {
-    TaskWrapper r1 = createTaskWrapper(createSubmitWorkRequestProto(1, 2, 100), false, 100000);
-    TaskWrapper r2 = createTaskWrapper(createSubmitWorkRequestProto(2, 4, 200), false, 100000);
-    TaskWrapper r3 = createTaskWrapper(createSubmitWorkRequestProto(3, 6, 300), false, 1000000);
-    TaskWrapper r4 = createTaskWrapper(createSubmitWorkRequestProto(4, 8, 400), false, 1000000);
+    TaskWrapper r1 = createTaskWrapper(createSubmitWorkRequestProto(1, 2, 100, 200), false, 100000);
+    TaskWrapper r2 = createTaskWrapper(createSubmitWorkRequestProto(2, 4, 200, 300), false, 100000);
+    TaskWrapper r3 = createTaskWrapper(createSubmitWorkRequestProto(3, 6, 300, 400), false, 1000000);
+    TaskWrapper r4 = createTaskWrapper(createSubmitWorkRequestProto(4, 8, 400, 500), false, 1000000);
     BlockingQueue<TaskWrapper> queue = new PriorityBlockingQueue<>(4,
         new TaskExecutorService.PreemptionQueueComparator());
 
@@ -71,8 +76,8 @@ public class TestTaskExecutorService {
 
   @Test(timeout = 10000)
   public void testFinishablePreeptsNonFinishable() throws InterruptedException {
-    MockRequest r1 = createMockRequest(1, 1, 100, false, 5000l);
-    MockRequest r2 = createMockRequest(2, 1, 100, true, 1000l);
+    MockRequest r1 = createMockRequest(1, 1, 100, 200, false, 5000l);
+    MockRequest r2 = createMockRequest(2, 1, 100, 200, true, 1000l);
     TaskExecutorServiceForTest taskExecutorService = new TaskExecutorServiceForTest(1, 2,
         ShortestJobFirstComparator.class.getName(), true);
     taskExecutorService.init(new Configuration());
@@ -110,7 +115,7 @@ public class TestTaskExecutorService {
   @Test(timeout = 10000)
   public void testPreemptionStateOnTaskMoveToFinishableState() throws InterruptedException {
 
-    MockRequest r1 = createMockRequest(1, 1, 100, false, 20000l);
+    MockRequest r1 = createMockRequest(1, 1, 100, 200, false, 20000l);
 
     TaskExecutorServiceForTest taskExecutorService =
         new TaskExecutorServiceForTest(1, 2, ShortestJobFirstComparator.class.getName(), true);
@@ -142,7 +147,7 @@ public class TestTaskExecutorService {
   @Test(timeout = 10000)
   public void testPreemptionStateOnTaskMoveToNonFinishableState() throws InterruptedException {
 
-    MockRequest r1 = createMockRequest(1, 1, 100, true, 20000l);
+    MockRequest r1 = createMockRequest(1, 1, 100, 200, true, 20000l);
 
     TaskExecutorServiceForTest taskExecutorService =
         new TaskExecutorServiceForTest(1, 2, ShortestJobFirstComparator.class.getName(), true);
@@ -174,13 +179,66 @@ public class TestTaskExecutorService {
     }
   }
 
+  // Tests wait queue behaviour for fragments which have reported to the AM, but have not given up their executor slot.
+  @Test (timeout = 10000)
+  public void testWaitQueueAcceptAfterAMTaskReport() throws
+      InterruptedException {
+
+    TaskExecutorServiceForTest taskExecutorService =
+        new TaskExecutorServiceForTest(1, 2, ShortestJobFirstComparator.class.getName(), true);
+
+    // Fourth is lower priority as a result of canFinish being set to false.
+    MockRequest r1 = createMockRequest(1, 1, 100, 200, true, 20000l);
+    MockRequest r2 = createMockRequest(2, 1, 1, 200, 2000, true, 20000l);
+    MockRequest r3 = createMockRequest(3, 1, 2, 300, 420, true, 20000l);
+    MockRequest r4 = createMockRequest(4, 1, 3, 400, 510, false, 20000l);
+
+    taskExecutorService.init(new Configuration());
+    taskExecutorService.start();
+    try {
+      Scheduler.SubmissionState submissionState;
+      submissionState = taskExecutorService.schedule(r1);
+      assertEquals(Scheduler.SubmissionState.ACCEPTED, submissionState);
+      r1.awaitStart();
+
+      submissionState = taskExecutorService.schedule(r2);
+      assertEquals(Scheduler.SubmissionState.ACCEPTED, submissionState);
+
+      submissionState = taskExecutorService.schedule(r3);
+      assertEquals(Scheduler.SubmissionState.ACCEPTED, submissionState);
+
+      submissionState = taskExecutorService.schedule(r4);
+      assertEquals(Scheduler.SubmissionState.REJECTED, submissionState);
+
+      // Mark a fragment as completing, but don't actually complete it yet.
+      // The wait queue should now have capacity to accept one more fragment.
+      taskExecutorService.fragmentCompleting(r1.getRequestId(),
+          SchedulerFragmentCompletingListener.State.SUCCESS);
+
+      submissionState = taskExecutorService.schedule(r4);
+      assertEquals(Scheduler.SubmissionState.ACCEPTED, submissionState);
+
+      assertEquals(3, taskExecutorService.waitQueue.size());
+      assertEquals(1, taskExecutorService.completingFragmentMap.size());
+
+      r1.complete();
+      r1.awaitEnd();
+      // r2 can only start once 1 fragment has completed. the map should be clear at this point.
+      awaitStartAndSchedulerRun(r2, taskExecutorService);
+      assertEquals(0, taskExecutorService.completingFragmentMap.size());
+
+    } finally {
+      taskExecutorService.shutDown(false);
+    }
+  }
+
   @Test(timeout = 10000)
   public void testWaitQueuePreemption() throws InterruptedException {
-    MockRequest r1 = createMockRequest(1, 1, 100, true, 20000l);
-    MockRequest r2 = createMockRequest(2, 1, 200, false, 20000l);
-    MockRequest r3 = createMockRequest(3, 1, 300, false, 20000l);
-    MockRequest r4 = createMockRequest(4, 1, 400, false, 20000l);
-    MockRequest r5 = createMockRequest(5, 1, 500, true, 20000l);
+    MockRequest r1 = createMockRequest(1, 1, 100, 200, true, 20000l);
+    MockRequest r2 = createMockRequest(2, 1, 1,200, 330, false, 20000l);
+    MockRequest r3 = createMockRequest(3, 2, 2,300, 420, false, 20000l);
+    MockRequest r4 = createMockRequest(4, 1, 3,400, 510, false, 20000l);
+    MockRequest r5 = createMockRequest(5, 1, 500, 610, true, 20000l);
 
     TaskExecutorServiceForTest taskExecutorService =
         new TaskExecutorServiceForTest(1, 2, ShortestJobFirstComparator.class.getName(), true);
@@ -190,8 +248,7 @@ public class TestTaskExecutorService {
     try {
       taskExecutorService.schedule(r1);
 
-      // TODO HIVE-11687. Remove the awaitStart once offer can handle (waitQueueSize + numFreeExecutionSlots)
-      // This currently serves to allow the task to be removed from the waitQueue.
+      // 1 scheduling run will happen, which may or may not pick up this task in the test..
       awaitStartAndSchedulerRun(r1, taskExecutorService);
       Scheduler.SubmissionState submissionState = taskExecutorService.schedule(r2);
       assertEquals(Scheduler.SubmissionState.ACCEPTED, submissionState);
@@ -250,6 +307,58 @@ public class TestTaskExecutorService {
     }
   }
 
+  @Test(timeout = 10000)
+  public void testDontKillMultiple() throws InterruptedException {
+    MockRequest victim1 = createMockRequest(1, 1, 100, 100, false, 20000l);
+    MockRequest victim2 = createMockRequest(2, 1, 100, 100, false, 20000l);
+    runPreemptionGraceTest(victim1, victim2, 200);
+    assertNotEquals(victim1.wasPreempted(), victim2.wasPreempted()); // One and only one.
+  }
+
+  @Test(timeout = 10000)
+  public void testDoKillMultiple() throws InterruptedException {
+    MockRequest victim1 = createMockRequest(1, 1, 100, 100, false, 20000l);
+    MockRequest victim2 = createMockRequest(2, 1, 100, 100, false, 20000l);
+    runPreemptionGraceTest(victim1, victim2, 1000);
+    assertTrue(victim1.wasPreempted());
+    assertTrue(victim2.wasPreempted());
+  }
+
+  private void runPreemptionGraceTest(
+      MockRequest victim1, MockRequest victim2, int time) throws InterruptedException {
+    MockRequest preemptor = createMockRequest(3, 1, 100, 100, true, 20000l);
+    victim1.setSleepAfterKill();
+    victim2.setSleepAfterKill();
+
+    ControlledClock clock = new ControlledClock(new SystemClock());
+    clock.setTime(0);
+    TaskExecutorServiceForTest taskExecutorService = new TaskExecutorServiceForTest(
+        2, 3, ShortestJobFirstComparator.class.getName(), true, clock);
+    taskExecutorService.init(new Configuration());
+    taskExecutorService.start();
+
+    try {
+      taskExecutorService.schedule(victim1);
+      awaitStartAndSchedulerRun(victim1, taskExecutorService);
+      taskExecutorService.schedule(victim2);
+      awaitStartAndSchedulerRun(victim2, taskExecutorService);
+      taskExecutorService.schedule(preemptor);
+      taskExecutorService.waitForScheduleRuns(5); // Wait for scheduling to run a few times.
+      clock.setTime(time);
+      taskExecutorService.waitForScheduleRuns(5); // Wait for scheduling to run a few times.
+      victim1.unblockKill();
+      victim2.unblockKill();
+      preemptor.complete();
+      preemptor.awaitEnd();
+      TaskExecutorServiceForTest.InternalCompletionListenerForTest icl3 =
+          taskExecutorService.getInternalCompletionListenerForTest(preemptor.getRequestId());
+      icl3.awaitCompletion();
+    } finally {
+      taskExecutorService.shutDown(false);
+    }
+  }
+
+
 
   private void awaitStartAndSchedulerRun(MockRequest mockRequest,
                                          TaskExecutorServiceForTest taskExecutorServiceForTest) throws
@@ -266,23 +375,43 @@ public class TestTaskExecutorService {
     private final Lock tryScheduleLock = new ReentrantLock();
     private final Condition tryScheduleCondition = tryScheduleLock.newCondition();
     private boolean isInTrySchedule = false;
+    private int scheduleAttempts = 0;
 
-    public TaskExecutorServiceForTest(int numExecutors, int waitQueueSize, String waitQueueComparatorClassName,
-                                      boolean enablePreemption) {
-      super(numExecutors, waitQueueSize, waitQueueComparatorClassName, enablePreemption,
-          Thread.currentThread().getContextClassLoader(), null);
+    public TaskExecutorServiceForTest(int numExecutors, int waitQueueSize,
+        String waitQueueComparatorClassName, boolean enablePreemption) {
+      this(numExecutors, waitQueueSize, waitQueueComparatorClassName, enablePreemption, null);
     }
 
-    private ConcurrentMap<String, InternalCompletionListenerForTest> completionListeners = new ConcurrentHashMap<>();
+    public TaskExecutorServiceForTest(int numExecutors, int waitQueueSize,
+        String waitQueueComparatorClassName, boolean enablePreemption, Clock clock) {
+      super(numExecutors, waitQueueSize, waitQueueComparatorClassName, enablePreemption,
+          Thread.currentThread().getContextClassLoader(), null, clock);
+    }
+
+    private ConcurrentMap<String, InternalCompletionListenerForTest> completionListeners =
+        new ConcurrentHashMap<>();
 
     @Override
-    void trySchedule(final TaskWrapper taskWrapper) throws RejectedExecutionException {
+    void tryScheduleUnderLock(final TaskWrapper taskWrapper) throws RejectedExecutionException {
       tryScheduleLock.lock();
       try {
         isInTrySchedule = true;
-        super.trySchedule(taskWrapper);
+        super.tryScheduleUnderLock(taskWrapper);
+      } finally {
         isInTrySchedule = false;
+        ++scheduleAttempts;
         tryScheduleCondition.signal();
+        tryScheduleLock.unlock();
+      }
+    }
+
+    public void waitForScheduleRuns(int n) throws InterruptedException {
+      tryScheduleLock.lock();
+      try {
+        int targetRuns = scheduleAttempts + n;
+        while (scheduleAttempts < targetRuns) {
+          tryScheduleCondition.await(100, TimeUnit.MILLISECONDS);
+        }
       } finally {
         tryScheduleLock.unlock();
       }

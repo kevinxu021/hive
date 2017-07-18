@@ -194,7 +194,7 @@ public class ReduceSinkDeDuplication extends Transform {
       ReduceSinkDesc cRSc = cRS.getConf();
       for (ReduceSinkOperator pRSNs : pRSs) {
         ReduceSinkDesc pRSNc = pRSNs.getConf();
-        if (cRSc.getKeyCols().size() < pRSNc.getKeyCols().size()) {
+        if (cRSc.getKeyCols().size() != pRSNc.getKeyCols().size()) {
           return false;
         }
         if (cRSc.getPartitionCols().size() != pRSNc.getPartitionCols().size()) {
@@ -358,6 +358,10 @@ public class ReduceSinkDeDuplication extends Transform {
       Integer moveRSOrderTo = checkOrder(checkStrictEquality, cConf.getOrder(), pConf.getOrder(),
               cConf.getNullOrder(), pConf.getNullOrder());
       if (moveRSOrderTo == null) {
+        return null;
+      }
+      // if cRS is being used for distinct - the two reduce sinks are incompatible
+      if (cConf.getDistinctColumnIndices().size() >= 2) {
         return null;
       }
       Integer moveReducerNumTo = checkNumReducer(cConf.getNumReducers(), pConf.getNumReducers());

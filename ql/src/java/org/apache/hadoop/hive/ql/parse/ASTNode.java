@@ -346,5 +346,4 @@ public class ASTNode extends CommonTree implements Node,Serializable {
 
     return rootNode.getMemoizedSubString(startIndx, endIndx);
   }
-
 }

@@ -188,6 +188,23 @@ public class TestBeelineArgParsing {
   }
 
   @Test
+  public void testBeelineAutoCommit() throws Exception {
+    TestBeeline bl = new TestBeeline();
+    String[] args = {};
+    bl.initArgs(args);
+    Assert.assertTrue(bl.getOpts().getAutoCommit());
+
+    args = new String[] {"--autoCommit=false"};
+    bl.initArgs(args);
+    Assert.assertFalse(bl.getOpts().getAutoCommit());
+
+    args = new String[] {"--autoCommit=true"};
+    bl.initArgs(args);
+    Assert.assertTrue(bl.getOpts().getAutoCommit());
+    bl.close();
+  }
+
+  @Test
   public void testBeelineShowDbInPromptOptsDefault() throws Exception {
     TestBeeline bl = new TestBeeline();
     String args[] = new String[] { "-u", "url" };
@@ -272,6 +289,7 @@ public class TestBeelineArgParsing {
       Assert.assertNull(bl.findLocalDriver(connectionString));
     } else {
       // no need to add for the default supported local jar driver
+      Assert.assertNotNull(bl.findLocalDriver(connectionString));
       Assert.assertEquals(bl.findLocalDriver(connectionString).getClass().getName(), driverClazzName);
     }
   }
@@ -299,6 +317,18 @@ public class TestBeelineArgParsing {
     String args[] = new String[] {"--property-file", "props"};
     Assert.assertEquals(0, bl.initArgs(args));
     Assert.assertTrue(bl.properties.get(0).equals("props"));
+    bl.close();
+  }
+
+  /**
+   * Test maxHistoryRows parameter option.
+   */
+  @Test
+  public void testMaxHistoryRows() throws Exception {
+    TestBeeline bl = new TestBeeline();
+    String args[] = new String[] {"--maxHistoryRows=100"};
+    Assert.assertEquals(0, bl.initArgs(args));
+    Assert.assertTrue(bl.getOpts().getMaxHistoryRows() == 100);
     bl.close();
   }
 }

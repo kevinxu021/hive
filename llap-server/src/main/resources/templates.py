@@ -84,7 +84,8 @@ appConfig = """
     "internal.chaos.monkey.probability.amlaunchfailure": "0",
     "internal.chaos.monkey.probability.containerfailure": "%(monkey_percentage)d",
     "internal.chaos.monkey.interval.seconds": "%(monkey_interval)d",
-    "internal.chaos.monkey.enabled": "%(monkey_enabled)s"
+    "internal.chaos.monkey.enabled": "%(monkey_enabled)s"%(slider_appconfig_global_append)s
+
   },
   "components": {
     "slider-appmaster": {
@@ -113,8 +114,9 @@ resources = """
     "LLAP": {
       "yarn.role.priority": "1",
       "yarn.component.instances": "%(instances)d",
+      "yarn.resource.normalization.enabled": "false",
       "yarn.memory": "%(container.mb)d",
-      "yarn.component.placement.policy" : "4"
+      "yarn.component.placement.policy" : "%(placement)d"
     }
   }
 }
@@ -126,7 +128,7 @@ runner = """
 #!/bin/bash -e
 
 BASEDIR=$(dirname $0)
-slider stop %(name)s
+slider stop %(name)s --wait 10 || slider stop %(name)s --force --wait 30
 slider destroy %(name)s --force || slider destroy %(name)s
 slider install-package --name LLAP --package  $BASEDIR/llap-%(version)s.zip --replacepkg
 slider create %(name)s --resources $BASEDIR/resources.json --template $BASEDIR/appConfig.json %(queue.string)s

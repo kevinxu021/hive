@@ -19,6 +19,7 @@
 package org.apache.hadoop.hive.ql.exec.spark;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -51,6 +52,7 @@ import org.apache.hadoop.hive.ql.exec.spark.session.SparkSessionManager;
 import org.apache.hadoop.hive.ql.exec.spark.session.SparkSessionManagerImpl;
 import org.apache.hadoop.hive.ql.exec.spark.status.SparkJobRef;
 import org.apache.hadoop.hive.ql.exec.spark.status.SparkJobStatus;
+import org.apache.hadoop.hive.ql.exec.spark.status.SparkStageProgress;
 import org.apache.hadoop.hive.ql.history.HiveHistory.Keys;
 import org.apache.hadoop.hive.ql.log.PerfLogger;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
@@ -70,8 +72,20 @@ public class SparkTask extends Task<SparkWork> {
   private static final String CLASS_NAME = SparkTask.class.getName();
   private static final Logger LOG = LoggerFactory.getLogger(CLASS_NAME);
   private static final LogHelper console = new LogHelper(LOG);
-  private final PerfLogger perfLogger = SessionState.getPerfLogger();
+  private PerfLogger perfLogger;
   private static final long serialVersionUID = 1L;
+  private transient String sparkJobID;
+  private transient SparkStatistics sparkStatistics;
+  private transient long submitTime;
+  private transient long startTime;
+  private transient long finishTime;
+  private transient int succeededTaskCount;
+  private transient int totalTaskCount;
+  private transient int failedTaskCount;
+  private transient List<Integer> stageIds;
+  private transient SparkJobRef jobRef = null;
+  private transient boolean isShutdown = false;
+  private transient boolean jobKilled = false;
 
   @Override
   public void initialize(QueryState queryState, QueryPlan queryPlan, DriverContext driverContext,
@@ -83,6 +97,7 @@ public class SparkTask extends Task<SparkWork> {
   public int execute(DriverContext driverContext) {
 
     int rc = 0;
+    perfLogger = SessionState.getPerfLogger();
     SparkSession sparkSession = null;
     SparkSessionManager sparkSessionManager = null;
     try {
@@ -94,14 +109,23 @@ public class SparkTask extends Task<SparkWork> {
       sparkWork.setRequiredCounterPrefix(getOperatorCounters());
 
       perfLogger.PerfLogBegin(CLASS_NAME, PerfLogger.SPARK_SUBMIT_JOB);
-      SparkJobRef jobRef = sparkSession.submit(driverContext, sparkWork);
+      submitTime = perfLogger.getStartTime(PerfLogger.SPARK_SUBMIT_JOB);
+      jobRef = sparkSession.submit(driverContext, sparkWork);
       perfLogger.PerfLogEnd(CLASS_NAME, PerfLogger.SPARK_SUBMIT_JOB);
 
+      if (driverContext.isShutdown()) {
+        killJob();
+        throw new HiveException("Operation is cancelled.");
+      }
+
       addToHistory(jobRef);
+      sparkJobID = jobRef.getJobId();
+      this.jobID = jobRef.getSparkJobStatus().getAppID();
       rc = jobRef.monitorJob();
       SparkJobStatus sparkJobStatus = jobRef.getSparkJobStatus();
+      getSparkJobInfo(sparkJobStatus, rc);
       if (rc == 0) {
-        SparkStatistics sparkStatistics = sparkJobStatus.getSparkStatistics();
+        sparkStatistics = sparkJobStatus.getSparkStatistics();
         if (LOG.isInfoEnabled() && sparkStatistics != null) {
           LOG.info(String.format("=====Spark Job[%s] statistics=====", jobRef.getJobId()));
           logSparkStatistic(sparkStatistics);
@@ -111,7 +135,16 @@ public class SparkTask extends Task<SparkWork> {
         // TODO: If the timeout is because of lack of resources in the cluster, we should
         // ideally also cancel the app request here. But w/o facilities from Spark or YARN,
         // it's difficult to do it on hive side alone. See HIVE-12650.
-        jobRef.cancelJob();
+        LOG.info("Failed to submit Spark job " + sparkJobID);
+        killJob();
+      } else if (rc == 4) {
+        LOG.info("The spark job or one stage of it has too many tasks" +
+            ". Cancelling Spark job " + sparkJobID + " with application ID " + jobID );
+        killJob();
+      }
+
+      if (this.jobID == null) {
+        this.jobID = sparkJobStatus.getAppID();
       }
       sparkJobStatus.cleanup();
     } catch (Exception e) {
@@ -121,8 +154,18 @@ public class SparkTask extends Task<SparkWork> {
       // org.apache.commons.lang.StringUtils
       console.printError(msg, "\n" + org.apache.hadoop.util.StringUtils.stringifyException(e));
       LOG.error(msg, e);
+      setException(e);
       rc = 1;
     } finally {
+      startTime = perfLogger.getEndTime(PerfLogger.SPARK_SUBMIT_TO_RUNNING);
+      // The startTime may not be set if the sparkTask finished too fast,
+      // because SparkJobMonitor will sleep for 1 second then check the state,
+      // right after sleep, the spark job may be already completed.
+      // In this case, set startTime the same as submitTime.
+      if (startTime < submitTime) {
+        startTime = submitTime;
+      }
+      finishTime = perfLogger.getEndTime(PerfLogger.SPARK_RUN_JOB);
       Utilities.clearWork(conf);
       if (sparkSession != null && sparkSessionManager != null) {
         rc = close(rc);
@@ -176,6 +219,7 @@ public class SparkTask extends Task<SparkWork> {
         String mesg = "Job Commit failed with exception '"
             + Utilities.getNameMessage(e) + "'";
         console.printError(mesg, "\n" + StringUtils.stringifyException(e));
+        setException(e);
       }
     }
     return rc;
@@ -183,11 +227,7 @@ public class SparkTask extends Task<SparkWork> {
 
   @Override
   public void updateTaskMetrics(Metrics metrics) {
-    try {
-      metrics.incrementCounter(MetricsConstant.HIVE_SPARK_TASKS);
-    } catch (IOException ex) {
-      LOG.warn("Could not increment metrics for " + this, ex);
-    }
+    metrics.incrementCounter(MetricsConstant.HIVE_SPARK_TASKS);
   }
 
   @Override
@@ -226,6 +266,72 @@ public class SparkTask extends Task<SparkWork> {
     }
 
     return ((ReduceWork) children.get(0)).getReducer();
+  }
+
+  public String getSparkJobID() {
+    return sparkJobID;
+  }
+
+  public SparkStatistics getSparkStatistics() {
+    return sparkStatistics;
+  }
+
+  public int getSucceededTaskCount() {
+    return succeededTaskCount;
+  }
+
+  public int getTotalTaskCount() {
+    return totalTaskCount;
+  }
+
+  public int getFailedTaskCount() {
+    return failedTaskCount;
+  }
+
+  public List<Integer> getStageIds() {
+    return stageIds;
+  }
+
+  public long getStartTime() {
+    return startTime;
+  }
+
+  public long getSubmitTime() {
+    return submitTime;
+  }
+
+  public long getFinishTime() {
+    return finishTime;
+  }
+
+  public boolean isTaskShutdown() {
+    return isShutdown;
+  }
+
+  @Override
+  public void shutdown() {
+    super.shutdown();
+    killJob();
+    isShutdown = true;
+  }
+
+  private void killJob() {
+    boolean needToKillJob = false;
+    if (jobRef != null && !jobKilled) {
+      synchronized (this) {
+        if (!jobKilled) {
+          jobKilled = true;
+          needToKillJob = true;
+        }
+      }
+    }
+    if (needToKillJob) {
+      try {
+        jobRef.cancelJob();
+      } catch (Exception e) {
+        LOG.warn("failed to kill job", e);
+      }
+    }
   }
 
   /**
@@ -276,5 +382,46 @@ public class SparkTask extends Task<SparkWork> {
     }
 
     return counters;
+  }
+
+  private void getSparkJobInfo(SparkJobStatus sparkJobStatus, int rc) {
+    try {
+      stageIds = new ArrayList<Integer>();
+      int[] ids = sparkJobStatus.getStageIds();
+      if (ids != null) {
+        for (int stageId : ids) {
+          stageIds.add(stageId);
+        }
+      }
+      Map<String, SparkStageProgress> progressMap = sparkJobStatus.getSparkStageProgress();
+      int sumTotal = 0;
+      int sumComplete = 0;
+      int sumFailed = 0;
+      for (String s : progressMap.keySet()) {
+        SparkStageProgress progress = progressMap.get(s);
+        final int complete = progress.getSucceededTaskCount();
+        final int total = progress.getTotalTaskCount();
+        final int failed = progress.getFailedTaskCount();
+        sumTotal += total;
+        sumComplete += complete;
+        sumFailed += failed;
+      }
+      succeededTaskCount = sumComplete;
+      totalTaskCount = sumTotal;
+      failedTaskCount = sumFailed;
+      if (rc != 0) {
+        Throwable error = sparkJobStatus.getError();
+        if (error != null) {
+          if ((error instanceof InterruptedException) ||
+              (error instanceof HiveException &&
+              error.getCause() instanceof InterruptedException)) {
+            killJob();
+          }
+          setException(error);
+        }
+      }
+    } catch (Exception e) {
+      LOG.error("Failed to get Spark job information", e);
+    }
   }
 }

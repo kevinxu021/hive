@@ -20,6 +20,7 @@ package org.apache.hadoop.hive.ql.optimizer.calcite.translator;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.apache.calcite.adapter.druid.DruidQuery;
 import org.apache.calcite.plan.RelOptUtil;
 import org.apache.calcite.plan.hep.HepRelVertex;
 import org.apache.calcite.plan.volcano.RelSubset;
@@ -111,6 +112,10 @@ public class PlanModifierForASTConv {
     if (rel instanceof HiveTableScan) {
       return ((HiveTableScan)rel).getTableAlias();
     }
+    if (rel instanceof DruidQuery) {
+      DruidQuery dq = (DruidQuery) rel;
+      return ((HiveTableScan) dq.getTableScan()).getTableAlias();
+    }
     if (rel instanceof Project) {
       return null;
     }
@@ -201,10 +206,7 @@ public class PlanModifierForASTConv {
     String colAlias;
     for (int i = 0; i < rootChildExps.size(); i++) {
       colAlias = resultSchema.get(i).getName();
-      if (colAlias.startsWith("_")) {
-        colAlias = colAlias.substring(1);
-        colAlias = getNewColAlias(newSelAliases, colAlias);
-      }
+      colAlias = getNewColAlias(newSelAliases, colAlias);
       newSelAliases.add(colAlias);
     }
 

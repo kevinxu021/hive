@@ -30,8 +30,8 @@ import org.apache.hadoop.hive.ql.metadata.Table;
 import org.apache.hadoop.hive.ql.metadata.VirtualColumn;
 import org.apache.hadoop.hive.ql.parse.TableSample;
 import org.apache.hadoop.hive.ql.plan.Explain.Level;
+import org.apache.hadoop.hive.ql.plan.Explain.Vectorization;
 import org.apache.hadoop.hive.serde.serdeConstants;
-
 
 /**
  * Table Scan Descriptor Currently, data is only read from a base source as part
@@ -81,6 +81,7 @@ public class TableScanDesc extends AbstractOperatorDesc {
   // SELECT count(*) FROM t).
   private List<Integer> neededColumnIDs;
   private List<String> neededColumns;
+  private List<String> neededNestedColumnPaths;
 
   // all column names referenced including virtual columns. used in ColumnAccessAnalyzer
   private transient List<String> referencedColumns;
@@ -100,6 +101,8 @@ public class TableScanDesc extends AbstractOperatorDesc {
   private boolean isMetadataOnly = false;
 
   private boolean isAcidTable;
+
+  private boolean vectorized;
 
   private AcidUtils.AcidOperationalProperties acidOperationalProperties = null;
 
@@ -147,7 +150,7 @@ public class TableScanDesc extends AbstractOperatorDesc {
 
   @Explain(explainLevels = { Level.USER })
   public String getTbl() {
-    StringBuffer sb = new StringBuffer();
+    StringBuilder sb = new StringBuilder();
     sb.append(this.tableMetadata.getCompleteName());
     sb.append("," + alias);
     if (isAcidTable()) {
@@ -175,6 +178,9 @@ public class TableScanDesc extends AbstractOperatorDesc {
 
   @Explain(displayName = "filterExpr")
   public String getFilterExprString() {
+    if (filterExpr == null) {
+      return null;
+    }
     return PlanUtils.getExprListString(Arrays.asList(filterExpr));
   }
 
@@ -202,12 +208,31 @@ public class TableScanDesc extends AbstractOperatorDesc {
     return neededColumnIDs;
   }
 
+  public List<String> getNeededNestedColumnPaths() {
+    return neededNestedColumnPaths;
+  }
+
+  public void setNeededNestedColumnPaths(List<String> neededNestedColumnPaths) {
+    this.neededNestedColumnPaths = neededNestedColumnPaths;
+  }
+
   public void setNeededColumns(List<String> neededColumns) {
     this.neededColumns = neededColumns;
   }
 
   public List<String> getNeededColumns() {
     return neededColumns;
+  }
+
+  @Explain(displayName = "Pruned Column Paths")
+  public List<String> getPrunedColumnPaths() {
+    List<String> result = new ArrayList<>();
+    for (String p : neededNestedColumnPaths) {
+      if (p.indexOf('.') >= 0) {
+        result.add(p);
+      }
+    }
+    return result;
   }
 
   public void setReferencedColumns(List<String> referencedColumns) {
@@ -396,4 +421,37 @@ public class TableScanDesc extends AbstractOperatorDesc {
     return opProps;
   }
 
+  public class TableScanOperatorExplainVectorization extends OperatorExplainVectorization {
+
+    private final TableScanDesc tableScanDesc;
+    private final VectorTableScanDesc vectorTableScanDesc;
+
+    public TableScanOperatorExplainVectorization(TableScanDesc tableScanDesc, VectorDesc vectorDesc) {
+      // Native vectorization supported.
+      super(vectorDesc, true);
+      this.tableScanDesc = tableScanDesc;
+      vectorTableScanDesc = (VectorTableScanDesc) vectorDesc;
+    }
+
+    @Explain(vectorization = Vectorization.EXPRESSION, displayName = "projectedOutputColumns", explainLevels = { Level.DEFAULT, Level.EXTENDED })
+    public String getProjectedOutputColumns() {
+      return Arrays.toString(vectorTableScanDesc.getProjectedOutputColumns());
+    }
+  }
+
+  @Explain(vectorization = Vectorization.OPERATOR, displayName = "TableScan Vectorization", explainLevels = { Level.DEFAULT, Level.EXTENDED })
+  public TableScanOperatorExplainVectorization getTableScanVectorization() {
+    if (vectorDesc == null) {
+      return null;
+    }
+    return new TableScanOperatorExplainVectorization(this, vectorDesc);
+  }
+
+  public void setVectorized(boolean vectorized) {
+    this.vectorized = vectorized;
+  }
+
+  public boolean isVectorized() {
+    return vectorized;
+  }
 }

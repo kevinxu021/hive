@@ -23,6 +23,7 @@ import org.apache.hadoop.hive.common.type.HiveDecimal;
 import org.apache.hadoop.hive.ql.exec.UDF;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedExpressions;
 import org.apache.hadoop.hive.ql.exec.vector.expressions.CastDecimalToBoolean;
+import org.apache.hadoop.hive.ql.exec.vector.expressions.CastStringToLong;
 import org.apache.hadoop.hive.ql.exec.vector.expressions.gen.CastDoubleToBooleanViaDoubleToLong;
 import org.apache.hadoop.hive.ql.exec.vector.expressions.gen.CastLongToBooleanViaLongToLong;
 import org.apache.hadoop.hive.ql.exec.vector.expressions.gen.CastDateToBooleanViaLongToLong;
@@ -32,6 +33,7 @@ import org.apache.hadoop.hive.serde2.io.DateWritable;
 import org.apache.hadoop.hive.serde2.io.DoubleWritable;
 import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
 import org.apache.hadoop.hive.serde2.io.ShortWritable;
+import org.apache.hadoop.hive.serde2.io.TimestampTZWritable;
 import org.apache.hadoop.hive.serde2.io.TimestampWritable;
 import org.apache.hadoop.io.BooleanWritable;
 import org.apache.hadoop.io.FloatWritable;
@@ -46,7 +48,7 @@ import org.apache.hadoop.io.Text;
  */
 @VectorizedExpressions({CastLongToBooleanViaLongToLong.class,
   CastDateToBooleanViaLongToLong.class, CastTimestampToBoolean.class,
-  CastDoubleToBooleanViaDoubleToLong.class, CastDecimalToBoolean.class})
+  CastDoubleToBooleanViaDoubleToLong.class, CastDecimalToBoolean.class, CastStringToLong.class})
 public class UDFToBoolean extends UDF {
   private final BooleanWritable booleanWritable = new BooleanWritable();
 
@@ -191,10 +193,10 @@ public class UDFToBoolean extends UDF {
   }
 
   public BooleanWritable evaluate(HiveDecimalWritable i) {
-    if (i == null) {
+    if (i == null || !i.isSet()) {
       return null;
     } else {
-      booleanWritable.set(HiveDecimal.ZERO.compareTo(i.getHiveDecimal()) != 0);
+      booleanWritable.set(i.compareTo(HiveDecimal.ZERO) != 0);
       return booleanWritable;
     }
   }

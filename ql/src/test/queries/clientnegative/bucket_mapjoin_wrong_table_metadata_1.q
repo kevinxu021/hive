@@ -1,3 +1,5 @@
+set hive.strict.checks.bucketing=false; 
+
 -- Although the user has specified a bucketed map-join, the number of buckets in the table
 -- do not match the number of files
 drop table table1;
@@ -15,6 +17,6 @@ load data local inpath '../../data/files/T2.txt' overwrite into table table2;
 
 set hive.optimize.bucketmapjoin = true;
 set hive.input.format = org.apache.hadoop.hive.ql.io.BucketizedHiveInputFormat;
-
+set hive.cbo.enable=false;
 select /*+ mapjoin(b) */ count(*) from table1 a join table2 b on a.key=b.key and a.value=b.value;
 

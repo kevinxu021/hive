@@ -22,8 +22,8 @@ import java.io.InputStream;
 import java.util.Iterator;
 import java.util.List;
 
+import org.apache.calcite.adapter.druid.DruidTable;
 import org.apache.hadoop.hive.druid.DruidStorageHandlerUtils;
-import org.apache.hadoop.hive.ql.optimizer.calcite.druid.DruidTable;
 import org.apache.hadoop.io.NullWritable;
 
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -41,6 +41,7 @@ public class DruidTopNQueryRecordReader
         extends DruidQueryRecordReader<TopNQuery, Result<TopNResultValue>> {
 
   private Result<TopNResultValue> current;
+
   private Iterator<DimensionAndMetricValueExtractor> values = Iterators.emptyIterator();
 
   @Override
@@ -49,9 +50,12 @@ public class DruidTopNQueryRecordReader
   }
 
   @Override
-  protected List<Result<TopNResultValue>> createResultsList(InputStream content) throws IOException {
+  protected List<Result<TopNResultValue>> createResultsList(InputStream content)
+          throws IOException {
     return DruidStorageHandlerUtils.SMILE_MAPPER.readValue(content,
-            new TypeReference<List<Result<TopNResultValue>>>(){});
+            new TypeReference<List<Result<TopNResultValue>>>() {
+            }
+    );
   }
 
   @Override
@@ -62,7 +66,7 @@ public class DruidTopNQueryRecordReader
     if (results.hasNext()) {
       current = results.next();
       values = current.getValue().getValue().iterator();
-      return true;
+      return nextKeyValue();
     }
     return false;
   }

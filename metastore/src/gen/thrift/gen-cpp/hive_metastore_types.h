@@ -158,6 +158,14 @@ struct FileMetadataExprType {
 
 extern const std::map<int, const char*> _FileMetadataExprType_VALUES_TO_NAMES;
 
+struct ClientCapability {
+  enum type {
+    TEST_CAPABILITY = 1
+  };
+};
+
+extern const std::map<int, const char*> _ClientCapability_VALUES_TO_NAMES;
+
 class Version;
 
 class FieldSchema;
@@ -165,6 +173,10 @@ class FieldSchema;
 class SQLPrimaryKey;
 
 class SQLForeignKey;
+
+class SQLUniqueConstraint;
+
+class SQLNotNullConstraint;
 
 class Type;
 
@@ -264,11 +276,23 @@ class ForeignKeysRequest;
 
 class ForeignKeysResponse;
 
+class UniqueConstraintsRequest;
+
+class UniqueConstraintsResponse;
+
+class NotNullConstraintsRequest;
+
+class NotNullConstraintsResponse;
+
 class DropConstraintRequest;
 
 class AddPrimaryKeyRequest;
 
 class AddForeignKeyRequest;
+
+class AddUniqueConstraintRequest;
+
+class AddNotNullConstraintRequest;
 
 class PartitionsByExprResult;
 
@@ -338,6 +362,8 @@ class HeartbeatTxnRangeResponse;
 
 class CompactionRequest;
 
+class CompactionResponse;
+
 class ShowCompactRequest;
 
 class ShowCompactResponseElement;
@@ -385,6 +411,20 @@ class CacheFileMetadataResult;
 class CacheFileMetadataRequest;
 
 class GetAllFunctionsResponse;
+
+class ClientCapabilities;
+
+class GetTableRequest;
+
+class GetTableResult;
+
+class GetTablesRequest;
+
+class GetTablesResult;
+
+class CmRecycleRequest;
+
+class CmRecycleResponse;
 
 class TableMeta;
 
@@ -737,6 +777,176 @@ class SQLForeignKey {
 void swap(SQLForeignKey &a, SQLForeignKey &b);
 
 inline std::ostream& operator<<(std::ostream& out, const SQLForeignKey& obj)
+{
+  obj.printTo(out);
+  return out;
+}
+
+typedef struct _SQLUniqueConstraint__isset {
+  _SQLUniqueConstraint__isset() : table_db(false), table_name(false), column_name(false), key_seq(false), uk_name(false), enable_cstr(false), validate_cstr(false), rely_cstr(false) {}
+  bool table_db :1;
+  bool table_name :1;
+  bool column_name :1;
+  bool key_seq :1;
+  bool uk_name :1;
+  bool enable_cstr :1;
+  bool validate_cstr :1;
+  bool rely_cstr :1;
+} _SQLUniqueConstraint__isset;
+
+class SQLUniqueConstraint {
+ public:
+
+  SQLUniqueConstraint(const SQLUniqueConstraint&);
+  SQLUniqueConstraint& operator=(const SQLUniqueConstraint&);
+  SQLUniqueConstraint() : table_db(), table_name(), column_name(), key_seq(0), uk_name(), enable_cstr(0), validate_cstr(0), rely_cstr(0) {
+  }
+
+  virtual ~SQLUniqueConstraint() throw();
+  std::string table_db;
+  std::string table_name;
+  std::string column_name;
+  int32_t key_seq;
+  std::string uk_name;
+  bool enable_cstr;
+  bool validate_cstr;
+  bool rely_cstr;
+
+  _SQLUniqueConstraint__isset __isset;
+
+  void __set_table_db(const std::string& val);
+
+  void __set_table_name(const std::string& val);
+
+  void __set_column_name(const std::string& val);
+
+  void __set_key_seq(const int32_t val);
+
+  void __set_uk_name(const std::string& val);
+
+  void __set_enable_cstr(const bool val);
+
+  void __set_validate_cstr(const bool val);
+
+  void __set_rely_cstr(const bool val);
+
+  bool operator == (const SQLUniqueConstraint & rhs) const
+  {
+    if (!(table_db == rhs.table_db))
+      return false;
+    if (!(table_name == rhs.table_name))
+      return false;
+    if (!(column_name == rhs.column_name))
+      return false;
+    if (!(key_seq == rhs.key_seq))
+      return false;
+    if (!(uk_name == rhs.uk_name))
+      return false;
+    if (!(enable_cstr == rhs.enable_cstr))
+      return false;
+    if (!(validate_cstr == rhs.validate_cstr))
+      return false;
+    if (!(rely_cstr == rhs.rely_cstr))
+      return false;
+    return true;
+  }
+  bool operator != (const SQLUniqueConstraint &rhs) const {
+    return !(*this == rhs);
+  }
+
+  bool operator < (const SQLUniqueConstraint & ) const;
+
+  uint32_t read(::apache::thrift::protocol::TProtocol* iprot);
+  uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const;
+
+  virtual void printTo(std::ostream& out) const;
+};
+
+void swap(SQLUniqueConstraint &a, SQLUniqueConstraint &b);
+
+inline std::ostream& operator<<(std::ostream& out, const SQLUniqueConstraint& obj)
+{
+  obj.printTo(out);
+  return out;
+}
+
+typedef struct _SQLNotNullConstraint__isset {
+  _SQLNotNullConstraint__isset() : table_db(false), table_name(false), column_name(false), nn_name(false), enable_cstr(false), validate_cstr(false), rely_cstr(false) {}
+  bool table_db :1;
+  bool table_name :1;
+  bool column_name :1;
+  bool nn_name :1;
+  bool enable_cstr :1;
+  bool validate_cstr :1;
+  bool rely_cstr :1;
+} _SQLNotNullConstraint__isset;
+
+class SQLNotNullConstraint {
+ public:
+
+  SQLNotNullConstraint(const SQLNotNullConstraint&);
+  SQLNotNullConstraint& operator=(const SQLNotNullConstraint&);
+  SQLNotNullConstraint() : table_db(), table_name(), column_name(), nn_name(), enable_cstr(0), validate_cstr(0), rely_cstr(0) {
+  }
+
+  virtual ~SQLNotNullConstraint() throw();
+  std::string table_db;
+  std::string table_name;
+  std::string column_name;
+  std::string nn_name;
+  bool enable_cstr;
+  bool validate_cstr;
+  bool rely_cstr;
+
+  _SQLNotNullConstraint__isset __isset;
+
+  void __set_table_db(const std::string& val);
+
+  void __set_table_name(const std::string& val);
+
+  void __set_column_name(const std::string& val);
+
+  void __set_nn_name(const std::string& val);
+
+  void __set_enable_cstr(const bool val);
+
+  void __set_validate_cstr(const bool val);
+
+  void __set_rely_cstr(const bool val);
+
+  bool operator == (const SQLNotNullConstraint & rhs) const
+  {
+    if (!(table_db == rhs.table_db))
+      return false;
+    if (!(table_name == rhs.table_name))
+      return false;
+    if (!(column_name == rhs.column_name))
+      return false;
+    if (!(nn_name == rhs.nn_name))
+      return false;
+    if (!(enable_cstr == rhs.enable_cstr))
+      return false;
+    if (!(validate_cstr == rhs.validate_cstr))
+      return false;
+    if (!(rely_cstr == rhs.rely_cstr))
+      return false;
+    return true;
+  }
+  bool operator != (const SQLNotNullConstraint &rhs) const {
+    return !(*this == rhs);
+  }
+
+  bool operator < (const SQLNotNullConstraint & ) const;
+
+  uint32_t read(::apache::thrift::protocol::TProtocol* iprot);
+  uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const;
+
+  virtual void printTo(std::ostream& out) const;
+};
+
+void swap(SQLNotNullConstraint &a, SQLNotNullConstraint &b);
+
+inline std::ostream& operator<<(std::ostream& out, const SQLNotNullConstraint& obj)
 {
   obj.printTo(out);
   return out;
@@ -2042,7 +2252,7 @@ inline std::ostream& operator<<(std::ostream& out, const StorageDescriptor& obj)
 }
 
 typedef struct _Table__isset {
-  _Table__isset() : tableName(false), dbName(false), owner(false), createTime(false), lastAccessTime(false), retention(false), sd(false), partitionKeys(false), parameters(false), viewOriginalText(false), viewExpandedText(false), tableType(false), privileges(false), temporary(true) {}
+  _Table__isset() : tableName(false), dbName(false), owner(false), createTime(false), lastAccessTime(false), retention(false), sd(false), partitionKeys(false), parameters(false), viewOriginalText(false), viewExpandedText(false), tableType(false), privileges(false), temporary(true), rewriteEnabled(false) {}
   bool tableName :1;
   bool dbName :1;
   bool owner :1;
@@ -2057,6 +2267,7 @@ typedef struct _Table__isset {
   bool tableType :1;
   bool privileges :1;
   bool temporary :1;
+  bool rewriteEnabled :1;
 } _Table__isset;
 
 class Table {
@@ -2064,7 +2275,7 @@ class Table {
 
   Table(const Table&);
   Table& operator=(const Table&);
-  Table() : tableName(), dbName(), owner(), createTime(0), lastAccessTime(0), retention(0), viewOriginalText(), viewExpandedText(), tableType(), temporary(false) {
+  Table() : tableName(), dbName(), owner(), createTime(0), lastAccessTime(0), retention(0), viewOriginalText(), viewExpandedText(), tableType(), temporary(false), rewriteEnabled(0) {
   }
 
   virtual ~Table() throw();
@@ -2082,6 +2293,7 @@ class Table {
   std::string tableType;
   PrincipalPrivilegeSet privileges;
   bool temporary;
+  bool rewriteEnabled;
 
   _Table__isset __isset;
 
@@ -2112,6 +2324,8 @@ class Table {
   void __set_privileges(const PrincipalPrivilegeSet& val);
 
   void __set_temporary(const bool val);
+
+  void __set_rewriteEnabled(const bool val);
 
   bool operator == (const Table & rhs) const
   {
@@ -2146,6 +2360,10 @@ class Table {
     if (__isset.temporary != rhs.__isset.temporary)
       return false;
     else if (__isset.temporary && !(temporary == rhs.temporary))
+      return false;
+    if (__isset.rewriteEnabled != rhs.__isset.rewriteEnabled)
+      return false;
+    else if (__isset.rewriteEnabled && !(rewriteEnabled == rhs.rewriteEnabled))
       return false;
     return true;
   }
@@ -3818,6 +4036,176 @@ inline std::ostream& operator<<(std::ostream& out, const ForeignKeysResponse& ob
 }
 
 
+class UniqueConstraintsRequest {
+ public:
+
+  UniqueConstraintsRequest(const UniqueConstraintsRequest&);
+  UniqueConstraintsRequest& operator=(const UniqueConstraintsRequest&);
+  UniqueConstraintsRequest() : db_name(), tbl_name() {
+  }
+
+  virtual ~UniqueConstraintsRequest() throw();
+  std::string db_name;
+  std::string tbl_name;
+
+  void __set_db_name(const std::string& val);
+
+  void __set_tbl_name(const std::string& val);
+
+  bool operator == (const UniqueConstraintsRequest & rhs) const
+  {
+    if (!(db_name == rhs.db_name))
+      return false;
+    if (!(tbl_name == rhs.tbl_name))
+      return false;
+    return true;
+  }
+  bool operator != (const UniqueConstraintsRequest &rhs) const {
+    return !(*this == rhs);
+  }
+
+  bool operator < (const UniqueConstraintsRequest & ) const;
+
+  uint32_t read(::apache::thrift::protocol::TProtocol* iprot);
+  uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const;
+
+  virtual void printTo(std::ostream& out) const;
+};
+
+void swap(UniqueConstraintsRequest &a, UniqueConstraintsRequest &b);
+
+inline std::ostream& operator<<(std::ostream& out, const UniqueConstraintsRequest& obj)
+{
+  obj.printTo(out);
+  return out;
+}
+
+
+class UniqueConstraintsResponse {
+ public:
+
+  UniqueConstraintsResponse(const UniqueConstraintsResponse&);
+  UniqueConstraintsResponse& operator=(const UniqueConstraintsResponse&);
+  UniqueConstraintsResponse() {
+  }
+
+  virtual ~UniqueConstraintsResponse() throw();
+  std::vector<SQLUniqueConstraint>  uniqueConstraints;
+
+  void __set_uniqueConstraints(const std::vector<SQLUniqueConstraint> & val);
+
+  bool operator == (const UniqueConstraintsResponse & rhs) const
+  {
+    if (!(uniqueConstraints == rhs.uniqueConstraints))
+      return false;
+    return true;
+  }
+  bool operator != (const UniqueConstraintsResponse &rhs) const {
+    return !(*this == rhs);
+  }
+
+  bool operator < (const UniqueConstraintsResponse & ) const;
+
+  uint32_t read(::apache::thrift::protocol::TProtocol* iprot);
+  uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const;
+
+  virtual void printTo(std::ostream& out) const;
+};
+
+void swap(UniqueConstraintsResponse &a, UniqueConstraintsResponse &b);
+
+inline std::ostream& operator<<(std::ostream& out, const UniqueConstraintsResponse& obj)
+{
+  obj.printTo(out);
+  return out;
+}
+
+
+class NotNullConstraintsRequest {
+ public:
+
+  NotNullConstraintsRequest(const NotNullConstraintsRequest&);
+  NotNullConstraintsRequest& operator=(const NotNullConstraintsRequest&);
+  NotNullConstraintsRequest() : db_name(), tbl_name() {
+  }
+
+  virtual ~NotNullConstraintsRequest() throw();
+  std::string db_name;
+  std::string tbl_name;
+
+  void __set_db_name(const std::string& val);
+
+  void __set_tbl_name(const std::string& val);
+
+  bool operator == (const NotNullConstraintsRequest & rhs) const
+  {
+    if (!(db_name == rhs.db_name))
+      return false;
+    if (!(tbl_name == rhs.tbl_name))
+      return false;
+    return true;
+  }
+  bool operator != (const NotNullConstraintsRequest &rhs) const {
+    return !(*this == rhs);
+  }
+
+  bool operator < (const NotNullConstraintsRequest & ) const;
+
+  uint32_t read(::apache::thrift::protocol::TProtocol* iprot);
+  uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const;
+
+  virtual void printTo(std::ostream& out) const;
+};
+
+void swap(NotNullConstraintsRequest &a, NotNullConstraintsRequest &b);
+
+inline std::ostream& operator<<(std::ostream& out, const NotNullConstraintsRequest& obj)
+{
+  obj.printTo(out);
+  return out;
+}
+
+
+class NotNullConstraintsResponse {
+ public:
+
+  NotNullConstraintsResponse(const NotNullConstraintsResponse&);
+  NotNullConstraintsResponse& operator=(const NotNullConstraintsResponse&);
+  NotNullConstraintsResponse() {
+  }
+
+  virtual ~NotNullConstraintsResponse() throw();
+  std::vector<SQLNotNullConstraint>  notNullConstraints;
+
+  void __set_notNullConstraints(const std::vector<SQLNotNullConstraint> & val);
+
+  bool operator == (const NotNullConstraintsResponse & rhs) const
+  {
+    if (!(notNullConstraints == rhs.notNullConstraints))
+      return false;
+    return true;
+  }
+  bool operator != (const NotNullConstraintsResponse &rhs) const {
+    return !(*this == rhs);
+  }
+
+  bool operator < (const NotNullConstraintsResponse & ) const;
+
+  uint32_t read(::apache::thrift::protocol::TProtocol* iprot);
+  uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const;
+
+  virtual void printTo(std::ostream& out) const;
+};
+
+void swap(NotNullConstraintsResponse &a, NotNullConstraintsResponse &b);
+
+inline std::ostream& operator<<(std::ostream& out, const NotNullConstraintsResponse& obj)
+{
+  obj.printTo(out);
+  return out;
+}
+
+
 class DropConstraintRequest {
  public:
 
@@ -3942,6 +4330,86 @@ class AddForeignKeyRequest {
 void swap(AddForeignKeyRequest &a, AddForeignKeyRequest &b);
 
 inline std::ostream& operator<<(std::ostream& out, const AddForeignKeyRequest& obj)
+{
+  obj.printTo(out);
+  return out;
+}
+
+
+class AddUniqueConstraintRequest {
+ public:
+
+  AddUniqueConstraintRequest(const AddUniqueConstraintRequest&);
+  AddUniqueConstraintRequest& operator=(const AddUniqueConstraintRequest&);
+  AddUniqueConstraintRequest() {
+  }
+
+  virtual ~AddUniqueConstraintRequest() throw();
+  std::vector<SQLUniqueConstraint>  uniqueConstraintCols;
+
+  void __set_uniqueConstraintCols(const std::vector<SQLUniqueConstraint> & val);
+
+  bool operator == (const AddUniqueConstraintRequest & rhs) const
+  {
+    if (!(uniqueConstraintCols == rhs.uniqueConstraintCols))
+      return false;
+    return true;
+  }
+  bool operator != (const AddUniqueConstraintRequest &rhs) const {
+    return !(*this == rhs);
+  }
+
+  bool operator < (const AddUniqueConstraintRequest & ) const;
+
+  uint32_t read(::apache::thrift::protocol::TProtocol* iprot);
+  uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const;
+
+  virtual void printTo(std::ostream& out) const;
+};
+
+void swap(AddUniqueConstraintRequest &a, AddUniqueConstraintRequest &b);
+
+inline std::ostream& operator<<(std::ostream& out, const AddUniqueConstraintRequest& obj)
+{
+  obj.printTo(out);
+  return out;
+}
+
+
+class AddNotNullConstraintRequest {
+ public:
+
+  AddNotNullConstraintRequest(const AddNotNullConstraintRequest&);
+  AddNotNullConstraintRequest& operator=(const AddNotNullConstraintRequest&);
+  AddNotNullConstraintRequest() {
+  }
+
+  virtual ~AddNotNullConstraintRequest() throw();
+  std::vector<SQLNotNullConstraint>  notNullConstraintCols;
+
+  void __set_notNullConstraintCols(const std::vector<SQLNotNullConstraint> & val);
+
+  bool operator == (const AddNotNullConstraintRequest & rhs) const
+  {
+    if (!(notNullConstraintCols == rhs.notNullConstraintCols))
+      return false;
+    return true;
+  }
+  bool operator != (const AddNotNullConstraintRequest &rhs) const {
+    return !(*this == rhs);
+  }
+
+  bool operator < (const AddNotNullConstraintRequest & ) const;
+
+  uint32_t read(::apache::thrift::protocol::TProtocol* iprot);
+  uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const;
+
+  virtual void printTo(std::ostream& out) const;
+};
+
+void swap(AddNotNullConstraintRequest &a, AddNotNullConstraintRequest &b);
+
+inline std::ostream& operator<<(std::ostream& out, const AddNotNullConstraintRequest& obj)
 {
   obj.printTo(out);
   return out;
@@ -4753,10 +5221,12 @@ inline std::ostream& operator<<(std::ostream& out, const Function& obj)
 }
 
 typedef struct _TxnInfo__isset {
-  _TxnInfo__isset() : agentInfo(true), heartbeatCount(true), metaInfo(false) {}
+  _TxnInfo__isset() : agentInfo(true), heartbeatCount(true), metaInfo(false), startedTime(false), lastHeartbeatTime(false) {}
   bool agentInfo :1;
   bool heartbeatCount :1;
   bool metaInfo :1;
+  bool startedTime :1;
+  bool lastHeartbeatTime :1;
 } _TxnInfo__isset;
 
 class TxnInfo {
@@ -4764,7 +5234,7 @@ class TxnInfo {
 
   TxnInfo(const TxnInfo&);
   TxnInfo& operator=(const TxnInfo&);
-  TxnInfo() : id(0), state((TxnState::type)0), user(), hostname(), agentInfo("Unknown"), heartbeatCount(0), metaInfo() {
+  TxnInfo() : id(0), state((TxnState::type)0), user(), hostname(), agentInfo("Unknown"), heartbeatCount(0), metaInfo(), startedTime(0), lastHeartbeatTime(0) {
   }
 
   virtual ~TxnInfo() throw();
@@ -4775,6 +5245,8 @@ class TxnInfo {
   std::string agentInfo;
   int32_t heartbeatCount;
   std::string metaInfo;
+  int64_t startedTime;
+  int64_t lastHeartbeatTime;
 
   _TxnInfo__isset __isset;
 
@@ -4791,6 +5263,10 @@ class TxnInfo {
   void __set_heartbeatCount(const int32_t val);
 
   void __set_metaInfo(const std::string& val);
+
+  void __set_startedTime(const int64_t val);
+
+  void __set_lastHeartbeatTime(const int64_t val);
 
   bool operator == (const TxnInfo & rhs) const
   {
@@ -4813,6 +5289,14 @@ class TxnInfo {
     if (__isset.metaInfo != rhs.__isset.metaInfo)
       return false;
     else if (__isset.metaInfo && !(metaInfo == rhs.metaInfo))
+      return false;
+    if (__isset.startedTime != rhs.__isset.startedTime)
+      return false;
+    else if (__isset.startedTime && !(startedTime == rhs.startedTime))
+      return false;
+    if (__isset.lastHeartbeatTime != rhs.__isset.lastHeartbeatTime)
+      return false;
+    else if (__isset.lastHeartbeatTime && !(lastHeartbeatTime == rhs.lastHeartbeatTime))
       return false;
     return true;
   }
@@ -4891,21 +5375,24 @@ class GetOpenTxnsResponse {
 
   GetOpenTxnsResponse(const GetOpenTxnsResponse&);
   GetOpenTxnsResponse& operator=(const GetOpenTxnsResponse&);
-  GetOpenTxnsResponse() : txn_high_water_mark(0), min_open_txn(0) {
+  GetOpenTxnsResponse() : txn_high_water_mark(0), min_open_txn(0), abortedBits() {
   }
 
   virtual ~GetOpenTxnsResponse() throw();
   int64_t txn_high_water_mark;
-  std::set<int64_t>  open_txns;
+  std::vector<int64_t>  open_txns;
   int64_t min_open_txn;
+  std::string abortedBits;
 
   _GetOpenTxnsResponse__isset __isset;
 
   void __set_txn_high_water_mark(const int64_t val);
 
-  void __set_open_txns(const std::set<int64_t> & val);
+  void __set_open_txns(const std::vector<int64_t> & val);
 
   void __set_min_open_txn(const int64_t val);
+
+  void __set_abortedBits(const std::string& val);
 
   bool operator == (const GetOpenTxnsResponse & rhs) const
   {
@@ -4916,6 +5403,8 @@ class GetOpenTxnsResponse {
     if (__isset.min_open_txn != rhs.__isset.min_open_txn)
       return false;
     else if (__isset.min_open_txn && !(min_open_txn == rhs.min_open_txn))
+      return false;
+    if (!(abortedBits == rhs.abortedBits))
       return false;
     return true;
   }
@@ -5163,11 +5652,12 @@ inline std::ostream& operator<<(std::ostream& out, const CommitTxnRequest& obj)
 }
 
 typedef struct _LockComponent__isset {
-  _LockComponent__isset() : tablename(false), partitionname(false), operationType(true), isAcid(true) {}
+  _LockComponent__isset() : tablename(false), partitionname(false), operationType(true), isAcid(true), isDynamicPartitionWrite(true) {}
   bool tablename :1;
   bool partitionname :1;
   bool operationType :1;
   bool isAcid :1;
+  bool isDynamicPartitionWrite :1;
 } _LockComponent__isset;
 
 class LockComponent {
@@ -5175,7 +5665,7 @@ class LockComponent {
 
   LockComponent(const LockComponent&);
   LockComponent& operator=(const LockComponent&);
-  LockComponent() : type((LockType::type)0), level((LockLevel::type)0), dbname(), tablename(), partitionname(), operationType((DataOperationType::type)5), isAcid(false) {
+  LockComponent() : type((LockType::type)0), level((LockLevel::type)0), dbname(), tablename(), partitionname(), operationType((DataOperationType::type)5), isAcid(false), isDynamicPartitionWrite(false) {
     operationType = (DataOperationType::type)5;
 
   }
@@ -5188,6 +5678,7 @@ class LockComponent {
   std::string partitionname;
   DataOperationType::type operationType;
   bool isAcid;
+  bool isDynamicPartitionWrite;
 
   _LockComponent__isset __isset;
 
@@ -5204,6 +5695,8 @@ class LockComponent {
   void __set_operationType(const DataOperationType::type val);
 
   void __set_isAcid(const bool val);
+
+  void __set_isDynamicPartitionWrite(const bool val);
 
   bool operator == (const LockComponent & rhs) const
   {
@@ -5228,6 +5721,10 @@ class LockComponent {
     if (__isset.isAcid != rhs.__isset.isAcid)
       return false;
     else if (__isset.isAcid && !(isAcid == rhs.isAcid))
+      return false;
+    if (__isset.isDynamicPartitionWrite != rhs.__isset.isDynamicPartitionWrite)
+      return false;
+    else if (__isset.isDynamicPartitionWrite && !(isDynamicPartitionWrite == rhs.isDynamicPartitionWrite))
       return false;
     return true;
   }
@@ -5959,6 +6456,56 @@ inline std::ostream& operator<<(std::ostream& out, const CompactionRequest& obj)
 }
 
 
+class CompactionResponse {
+ public:
+
+  CompactionResponse(const CompactionResponse&);
+  CompactionResponse& operator=(const CompactionResponse&);
+  CompactionResponse() : id(0), state(), accepted(0) {
+  }
+
+  virtual ~CompactionResponse() throw();
+  int64_t id;
+  std::string state;
+  bool accepted;
+
+  void __set_id(const int64_t val);
+
+  void __set_state(const std::string& val);
+
+  void __set_accepted(const bool val);
+
+  bool operator == (const CompactionResponse & rhs) const
+  {
+    if (!(id == rhs.id))
+      return false;
+    if (!(state == rhs.state))
+      return false;
+    if (!(accepted == rhs.accepted))
+      return false;
+    return true;
+  }
+  bool operator != (const CompactionResponse &rhs) const {
+    return !(*this == rhs);
+  }
+
+  bool operator < (const CompactionResponse & ) const;
+
+  uint32_t read(::apache::thrift::protocol::TProtocol* iprot);
+  uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const;
+
+  virtual void printTo(std::ostream& out) const;
+};
+
+void swap(CompactionResponse &a, CompactionResponse &b);
+
+inline std::ostream& operator<<(std::ostream& out, const CompactionResponse& obj)
+{
+  obj.printTo(out);
+  return out;
+}
+
+
 class ShowCompactRequest {
  public:
 
@@ -5994,7 +6541,7 @@ inline std::ostream& operator<<(std::ostream& out, const ShowCompactRequest& obj
 }
 
 typedef struct _ShowCompactResponseElement__isset {
-  _ShowCompactResponseElement__isset() : partitionname(false), workerid(false), start(false), runAs(false), hightestTxnId(false), metaInfo(false), endTime(false), hadoopJobId(true) {}
+  _ShowCompactResponseElement__isset() : partitionname(false), workerid(false), start(false), runAs(false), hightestTxnId(false), metaInfo(false), endTime(false), hadoopJobId(true), id(false) {}
   bool partitionname :1;
   bool workerid :1;
   bool start :1;
@@ -6003,6 +6550,7 @@ typedef struct _ShowCompactResponseElement__isset {
   bool metaInfo :1;
   bool endTime :1;
   bool hadoopJobId :1;
+  bool id :1;
 } _ShowCompactResponseElement__isset;
 
 class ShowCompactResponseElement {
@@ -6010,7 +6558,7 @@ class ShowCompactResponseElement {
 
   ShowCompactResponseElement(const ShowCompactResponseElement&);
   ShowCompactResponseElement& operator=(const ShowCompactResponseElement&);
-  ShowCompactResponseElement() : dbname(), tablename(), partitionname(), type((CompactionType::type)0), state(), workerid(), start(0), runAs(), hightestTxnId(0), metaInfo(), endTime(0), hadoopJobId("None") {
+  ShowCompactResponseElement() : dbname(), tablename(), partitionname(), type((CompactionType::type)0), state(), workerid(), start(0), runAs(), hightestTxnId(0), metaInfo(), endTime(0), hadoopJobId("None"), id(0) {
   }
 
   virtual ~ShowCompactResponseElement() throw();
@@ -6026,6 +6574,7 @@ class ShowCompactResponseElement {
   std::string metaInfo;
   int64_t endTime;
   std::string hadoopJobId;
+  int64_t id;
 
   _ShowCompactResponseElement__isset __isset;
 
@@ -6052,6 +6601,8 @@ class ShowCompactResponseElement {
   void __set_endTime(const int64_t val);
 
   void __set_hadoopJobId(const std::string& val);
+
+  void __set_id(const int64_t val);
 
   bool operator == (const ShowCompactResponseElement & rhs) const
   {
@@ -6094,6 +6645,10 @@ class ShowCompactResponseElement {
     if (__isset.hadoopJobId != rhs.__isset.hadoopJobId)
       return false;
     else if (__isset.hadoopJobId && !(hadoopJobId == rhs.hadoopJobId))
+      return false;
+    if (__isset.id != rhs.__isset.id)
+      return false;
+    else if (__isset.id && !(id == rhs.id))
       return false;
     return true;
   }
@@ -6281,9 +6836,10 @@ inline std::ostream& operator<<(std::ostream& out, const NotificationEventReques
 }
 
 typedef struct _NotificationEvent__isset {
-  _NotificationEvent__isset() : dbName(false), tableName(false) {}
+  _NotificationEvent__isset() : dbName(false), tableName(false), messageFormat(false) {}
   bool dbName :1;
   bool tableName :1;
+  bool messageFormat :1;
 } _NotificationEvent__isset;
 
 class NotificationEvent {
@@ -6291,7 +6847,7 @@ class NotificationEvent {
 
   NotificationEvent(const NotificationEvent&);
   NotificationEvent& operator=(const NotificationEvent&);
-  NotificationEvent() : eventId(0), eventTime(0), eventType(), dbName(), tableName(), message() {
+  NotificationEvent() : eventId(0), eventTime(0), eventType(), dbName(), tableName(), message(), messageFormat() {
   }
 
   virtual ~NotificationEvent() throw();
@@ -6301,6 +6857,7 @@ class NotificationEvent {
   std::string dbName;
   std::string tableName;
   std::string message;
+  std::string messageFormat;
 
   _NotificationEvent__isset __isset;
 
@@ -6315,6 +6872,8 @@ class NotificationEvent {
   void __set_tableName(const std::string& val);
 
   void __set_message(const std::string& val);
+
+  void __set_messageFormat(const std::string& val);
 
   bool operator == (const NotificationEvent & rhs) const
   {
@@ -6333,6 +6892,10 @@ class NotificationEvent {
     else if (__isset.tableName && !(tableName == rhs.tableName))
       return false;
     if (!(message == rhs.message))
+      return false;
+    if (__isset.messageFormat != rhs.__isset.messageFormat)
+      return false;
+    else if (__isset.messageFormat && !(messageFormat == rhs.messageFormat))
       return false;
     return true;
   }
@@ -6436,23 +6999,44 @@ inline std::ostream& operator<<(std::ostream& out, const CurrentNotificationEven
   return out;
 }
 
+typedef struct _InsertEventRequestData__isset {
+  _InsertEventRequestData__isset() : replace(false), filesAddedChecksum(false) {}
+  bool replace :1;
+  bool filesAddedChecksum :1;
+} _InsertEventRequestData__isset;
 
 class InsertEventRequestData {
  public:
 
   InsertEventRequestData(const InsertEventRequestData&);
   InsertEventRequestData& operator=(const InsertEventRequestData&);
-  InsertEventRequestData() {
+  InsertEventRequestData() : replace(0) {
   }
 
   virtual ~InsertEventRequestData() throw();
+  bool replace;
   std::vector<std::string>  filesAdded;
+  std::vector<std::string>  filesAddedChecksum;
+
+  _InsertEventRequestData__isset __isset;
+
+  void __set_replace(const bool val);
 
   void __set_filesAdded(const std::vector<std::string> & val);
 
+  void __set_filesAddedChecksum(const std::vector<std::string> & val);
+
   bool operator == (const InsertEventRequestData & rhs) const
   {
+    if (__isset.replace != rhs.__isset.replace)
+      return false;
+    else if (__isset.replace && !(replace == rhs.replace))
+      return false;
     if (!(filesAdded == rhs.filesAdded))
+      return false;
+    if (__isset.filesAddedChecksum != rhs.__isset.filesAddedChecksum)
+      return false;
+    else if (__isset.filesAddedChecksum && !(filesAddedChecksum == rhs.filesAddedChecksum))
       return false;
     return true;
   }
@@ -7200,6 +7784,325 @@ class GetAllFunctionsResponse {
 void swap(GetAllFunctionsResponse &a, GetAllFunctionsResponse &b);
 
 inline std::ostream& operator<<(std::ostream& out, const GetAllFunctionsResponse& obj)
+{
+  obj.printTo(out);
+  return out;
+}
+
+
+class ClientCapabilities {
+ public:
+
+  ClientCapabilities(const ClientCapabilities&);
+  ClientCapabilities& operator=(const ClientCapabilities&);
+  ClientCapabilities() {
+  }
+
+  virtual ~ClientCapabilities() throw();
+  std::vector<ClientCapability::type>  values;
+
+  void __set_values(const std::vector<ClientCapability::type> & val);
+
+  bool operator == (const ClientCapabilities & rhs) const
+  {
+    if (!(values == rhs.values))
+      return false;
+    return true;
+  }
+  bool operator != (const ClientCapabilities &rhs) const {
+    return !(*this == rhs);
+  }
+
+  bool operator < (const ClientCapabilities & ) const;
+
+  uint32_t read(::apache::thrift::protocol::TProtocol* iprot);
+  uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const;
+
+  virtual void printTo(std::ostream& out) const;
+};
+
+void swap(ClientCapabilities &a, ClientCapabilities &b);
+
+inline std::ostream& operator<<(std::ostream& out, const ClientCapabilities& obj)
+{
+  obj.printTo(out);
+  return out;
+}
+
+typedef struct _GetTableRequest__isset {
+  _GetTableRequest__isset() : capabilities(false) {}
+  bool capabilities :1;
+} _GetTableRequest__isset;
+
+class GetTableRequest {
+ public:
+
+  GetTableRequest(const GetTableRequest&);
+  GetTableRequest& operator=(const GetTableRequest&);
+  GetTableRequest() : dbName(), tblName() {
+  }
+
+  virtual ~GetTableRequest() throw();
+  std::string dbName;
+  std::string tblName;
+  ClientCapabilities capabilities;
+
+  _GetTableRequest__isset __isset;
+
+  void __set_dbName(const std::string& val);
+
+  void __set_tblName(const std::string& val);
+
+  void __set_capabilities(const ClientCapabilities& val);
+
+  bool operator == (const GetTableRequest & rhs) const
+  {
+    if (!(dbName == rhs.dbName))
+      return false;
+    if (!(tblName == rhs.tblName))
+      return false;
+    if (__isset.capabilities != rhs.__isset.capabilities)
+      return false;
+    else if (__isset.capabilities && !(capabilities == rhs.capabilities))
+      return false;
+    return true;
+  }
+  bool operator != (const GetTableRequest &rhs) const {
+    return !(*this == rhs);
+  }
+
+  bool operator < (const GetTableRequest & ) const;
+
+  uint32_t read(::apache::thrift::protocol::TProtocol* iprot);
+  uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const;
+
+  virtual void printTo(std::ostream& out) const;
+};
+
+void swap(GetTableRequest &a, GetTableRequest &b);
+
+inline std::ostream& operator<<(std::ostream& out, const GetTableRequest& obj)
+{
+  obj.printTo(out);
+  return out;
+}
+
+
+class GetTableResult {
+ public:
+
+  GetTableResult(const GetTableResult&);
+  GetTableResult& operator=(const GetTableResult&);
+  GetTableResult() {
+  }
+
+  virtual ~GetTableResult() throw();
+  Table table;
+
+  void __set_table(const Table& val);
+
+  bool operator == (const GetTableResult & rhs) const
+  {
+    if (!(table == rhs.table))
+      return false;
+    return true;
+  }
+  bool operator != (const GetTableResult &rhs) const {
+    return !(*this == rhs);
+  }
+
+  bool operator < (const GetTableResult & ) const;
+
+  uint32_t read(::apache::thrift::protocol::TProtocol* iprot);
+  uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const;
+
+  virtual void printTo(std::ostream& out) const;
+};
+
+void swap(GetTableResult &a, GetTableResult &b);
+
+inline std::ostream& operator<<(std::ostream& out, const GetTableResult& obj)
+{
+  obj.printTo(out);
+  return out;
+}
+
+typedef struct _GetTablesRequest__isset {
+  _GetTablesRequest__isset() : tblNames(false), capabilities(false) {}
+  bool tblNames :1;
+  bool capabilities :1;
+} _GetTablesRequest__isset;
+
+class GetTablesRequest {
+ public:
+
+  GetTablesRequest(const GetTablesRequest&);
+  GetTablesRequest& operator=(const GetTablesRequest&);
+  GetTablesRequest() : dbName() {
+  }
+
+  virtual ~GetTablesRequest() throw();
+  std::string dbName;
+  std::vector<std::string>  tblNames;
+  ClientCapabilities capabilities;
+
+  _GetTablesRequest__isset __isset;
+
+  void __set_dbName(const std::string& val);
+
+  void __set_tblNames(const std::vector<std::string> & val);
+
+  void __set_capabilities(const ClientCapabilities& val);
+
+  bool operator == (const GetTablesRequest & rhs) const
+  {
+    if (!(dbName == rhs.dbName))
+      return false;
+    if (__isset.tblNames != rhs.__isset.tblNames)
+      return false;
+    else if (__isset.tblNames && !(tblNames == rhs.tblNames))
+      return false;
+    if (__isset.capabilities != rhs.__isset.capabilities)
+      return false;
+    else if (__isset.capabilities && !(capabilities == rhs.capabilities))
+      return false;
+    return true;
+  }
+  bool operator != (const GetTablesRequest &rhs) const {
+    return !(*this == rhs);
+  }
+
+  bool operator < (const GetTablesRequest & ) const;
+
+  uint32_t read(::apache::thrift::protocol::TProtocol* iprot);
+  uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const;
+
+  virtual void printTo(std::ostream& out) const;
+};
+
+void swap(GetTablesRequest &a, GetTablesRequest &b);
+
+inline std::ostream& operator<<(std::ostream& out, const GetTablesRequest& obj)
+{
+  obj.printTo(out);
+  return out;
+}
+
+
+class GetTablesResult {
+ public:
+
+  GetTablesResult(const GetTablesResult&);
+  GetTablesResult& operator=(const GetTablesResult&);
+  GetTablesResult() {
+  }
+
+  virtual ~GetTablesResult() throw();
+  std::vector<Table>  tables;
+
+  void __set_tables(const std::vector<Table> & val);
+
+  bool operator == (const GetTablesResult & rhs) const
+  {
+    if (!(tables == rhs.tables))
+      return false;
+    return true;
+  }
+  bool operator != (const GetTablesResult &rhs) const {
+    return !(*this == rhs);
+  }
+
+  bool operator < (const GetTablesResult & ) const;
+
+  uint32_t read(::apache::thrift::protocol::TProtocol* iprot);
+  uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const;
+
+  virtual void printTo(std::ostream& out) const;
+};
+
+void swap(GetTablesResult &a, GetTablesResult &b);
+
+inline std::ostream& operator<<(std::ostream& out, const GetTablesResult& obj)
+{
+  obj.printTo(out);
+  return out;
+}
+
+
+class CmRecycleRequest {
+ public:
+
+  CmRecycleRequest(const CmRecycleRequest&);
+  CmRecycleRequest& operator=(const CmRecycleRequest&);
+  CmRecycleRequest() : dataPath(), purge(0) {
+  }
+
+  virtual ~CmRecycleRequest() throw();
+  std::string dataPath;
+  bool purge;
+
+  void __set_dataPath(const std::string& val);
+
+  void __set_purge(const bool val);
+
+  bool operator == (const CmRecycleRequest & rhs) const
+  {
+    if (!(dataPath == rhs.dataPath))
+      return false;
+    if (!(purge == rhs.purge))
+      return false;
+    return true;
+  }
+  bool operator != (const CmRecycleRequest &rhs) const {
+    return !(*this == rhs);
+  }
+
+  bool operator < (const CmRecycleRequest & ) const;
+
+  uint32_t read(::apache::thrift::protocol::TProtocol* iprot);
+  uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const;
+
+  virtual void printTo(std::ostream& out) const;
+};
+
+void swap(CmRecycleRequest &a, CmRecycleRequest &b);
+
+inline std::ostream& operator<<(std::ostream& out, const CmRecycleRequest& obj)
+{
+  obj.printTo(out);
+  return out;
+}
+
+
+class CmRecycleResponse {
+ public:
+
+  CmRecycleResponse(const CmRecycleResponse&);
+  CmRecycleResponse& operator=(const CmRecycleResponse&);
+  CmRecycleResponse() {
+  }
+
+  virtual ~CmRecycleResponse() throw();
+
+  bool operator == (const CmRecycleResponse & /* rhs */) const
+  {
+    return true;
+  }
+  bool operator != (const CmRecycleResponse &rhs) const {
+    return !(*this == rhs);
+  }
+
+  bool operator < (const CmRecycleResponse & ) const;
+
+  uint32_t read(::apache::thrift::protocol::TProtocol* iprot);
+  uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const;
+
+  virtual void printTo(std::ostream& out) const;
+};
+
+void swap(CmRecycleResponse &a, CmRecycleResponse &b);
+
+inline std::ostream& operator<<(std::ostream& out, const CmRecycleResponse& obj)
 {
   obj.printTo(out);
   return out;

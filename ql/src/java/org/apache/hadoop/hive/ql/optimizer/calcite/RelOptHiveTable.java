@@ -56,6 +56,8 @@ import org.apache.hadoop.hive.ql.parse.PrunedPartitionList;
 import org.apache.hadoop.hive.ql.plan.ColStatistics;
 import org.apache.hadoop.hive.ql.plan.ExprNodeDesc;
 import org.apache.hadoop.hive.ql.plan.Statistics;
+import org.apache.hadoop.hive.ql.session.SessionState;
+import org.apache.hadoop.hive.ql.session.SessionState.LogHelper;
 import org.apache.hadoop.hive.ql.stats.StatsUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -391,6 +393,11 @@ public class RelOptHiveTable extends RelOptAbstractTable {
       noColsMissingStats.getAndAdd(colNamesFailedStats.size());
       if (allowNullColumnForMissingStats) {
         LOG.warn(logMsg);
+        HiveConf conf = SessionState.getSessionConf();
+        if (HiveConf.getBoolVar(conf, HiveConf.ConfVars.HIVE_CBO_SHOW_WARNINGS)) {
+          LogHelper console = SessionState.getConsole();
+          console.printInfo(logMsg);
+        }
       } else {
         LOG.error(logMsg);
         throw new RuntimeException(logMsg);
@@ -412,20 +419,32 @@ public class RelOptHiveTable extends RelOptAbstractTable {
 
   public List<ColStatistics> getColStat(List<Integer> projIndxLst, boolean allowNullColumnForMissingStats) {
     List<ColStatistics> colStatsBldr = Lists.newArrayList();
-
+    Set<Integer> projIndxSet = new HashSet<Integer>(projIndxLst);
     if (projIndxLst != null) {
-      updateColStats(new HashSet<Integer>(projIndxLst), allowNullColumnForMissingStats);
       for (Integer i : projIndxLst) {
-        colStatsBldr.add(hiveColStatsMap.get(i));
+        if (hiveColStatsMap.get(i) != null) {
+          colStatsBldr.add(hiveColStatsMap.get(i));
+          projIndxSet.remove(i);
+        }
+      }
+      if (!projIndxSet.isEmpty()) {
+        updateColStats(projIndxSet, allowNullColumnForMissingStats);
+        for (Integer i : projIndxSet) {
+          colStatsBldr.add(hiveColStatsMap.get(i));
+        }
       }
     } else {
       List<Integer> pILst = new ArrayList<Integer>();
       for (Integer i = 0; i < noOfNonVirtualCols; i++) {
-        pILst.add(i);
+        if (hiveColStatsMap.get(i) == null) {
+          pILst.add(i);
+        }
       }
-      updateColStats(new HashSet<Integer>(pILst), allowNullColumnForMissingStats);
-      for (Integer pi : pILst) {
-        colStatsBldr.add(hiveColStatsMap.get(pi));
+      if (!pILst.isEmpty()) {
+        updateColStats(new HashSet<Integer>(pILst), allowNullColumnForMissingStats);
+        for (Integer pi : pILst) {
+          colStatsBldr.add(hiveColStatsMap.get(pi));
+        }
       }
     }
 
@@ -469,4 +488,18 @@ public class RelOptHiveTable extends RelOptAbstractTable {
   public Map<Integer, ColumnInfo> getNonPartColInfoMap() {
     return hiveNonPartitionColsMap;
   }
+
+  @Override
+  public boolean equals(Object obj) {
+    return obj instanceof RelOptHiveTable
+        && this.rowType.equals(((RelOptHiveTable) obj).getRowType())
+        && this.getHiveTableMD().equals(((RelOptHiveTable) obj).getHiveTableMD());
+  }
+
+  @Override
+  public int hashCode() {
+    return (this.getHiveTableMD() == null)
+        ? super.hashCode() : this.getHiveTableMD().hashCode();
+  }
+
 }
